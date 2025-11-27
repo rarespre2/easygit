@@ -1,6 +1,19 @@
-enum Region {
+#[derive(Debug, Default)]
+pub enum Region {
+    #[default]
     Commits,
-    Changes,
+    Details,
     Branches,
-    Stashes
+    Stashes,
+}
+
+impl Region {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Region::Commits => "[c] Commits",
+            Region::Branches => "[b] Branches",
+            Region::Details => "[d] Details",
+            Region::Stashes => "[s] Stashes",
+        }
+    }
 }

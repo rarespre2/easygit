@@ -1,3 +1,107 @@
-fn main() {
-    println!("Hello, world!");
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
+use ratatui::layout::Direction;
+use ratatui::style::{Color, Style};
+use ratatui::{
+    DefaultTerminal, Frame,
+    buffer::Buffer,
+    layout::{Constraint, Layout, Rect},
+    style::Stylize,
+    symbols::border,
+    text::{Line, Text},
+    widgets::{Block, Paragraph, Widget},
+};
+use std::io;
+
+use crate::regions::Region;
+
+mod regions;
+
+fn main() -> io::Result<()> {
+    let mut terminal = ratatui::init();
+    let app_result = App::default().run(&mut terminal);
+    ratatui::restore();
+    app_result
+}
+
+#[derive(Debug, Default)]
+pub struct App {
+    selectedRegion: Region,
+    exit: bool,
+}
+
+impl App {
+    pub fn run(&mut self, terminal: &mut DefaultTerminal) -> io::Result<()> {
+        while !self.exit {
+            terminal.draw(|frame| self.draw(frame))?;
+            self.handle_events()?;
+        }
+        Ok(())
+    }
+
+    fn draw(&self, frame: &mut Frame) {
+        frame.render_widget(self, frame.area());
+    }
+
+    fn handle_events(&mut self) -> io::Result<()> {
+        match event::read()? {
+            // it's important to check that the event is a key press event as
+            // crossterm also emits key release and repeat events on Windows.
+            Event::Key(key_event) if key_event.kind == KeyEventKind::Press => {
+                self.handle_key_event(key_event)
+            }
+            _ => {}
+        };
+        Ok(())
+    }
+
+    fn handle_key_event(&mut self, key_event: KeyEvent) {
+        match key_event.code {
+            KeyCode::Char('q') => self.exit(),
+            _ => {}
+        }
+    }
+
+    fn exit(&mut self) {
+        self.exit = true;
+    }
+}
+
+impl Widget for &App {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        let outer_layout = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints(vec![Constraint::Percentage(30), Constraint::Percentage(70)])
+            .split(area);
+
+        let left_layout = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints(vec![Constraint::Percentage(70), Constraint::Percentage(30)])
+            .split(outer_layout[0]);
+
+        let right_layout = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints(vec![Constraint::Percentage(70), Constraint::Percentage(30)])
+            .split(outer_layout[1]);
+
+        Block::bordered()
+            .title(Region::Branches.as_str())
+            .style(Style::default().fg(Color::Blue))
+            .border_set(border::THICK)
+            .render(left_layout[0], buf);
+        Block::bordered()
+            .title(Region::Stashes.as_str())
+            .style(Style::default().fg(Color::Blue))
+            .border_set(border::THICK)
+            .render(left_layout[1], buf);
+        Block::bordered()
+            .title(Region::Commits.as_str())
+            .style(Style::default().fg(Color::Blue))
+            .border_set(border::THICK)
+            .render(right_layout[0], buf);
+        Block::bordered()
+            .title(Region::Details.as_str())
+            .style(Style::default().fg(Color::Blue))
+            .border_set(border::THICK)
+            .render(right_layout[1], buf);
+    }
 }
