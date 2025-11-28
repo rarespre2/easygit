@@ -25,7 +25,7 @@ fn main() -> io::Result<()> {
 
 #[derive(Debug, Default)]
 pub struct App {
-    selectedRegion: Region,
+    selected_region: Region,
     exit: bool,
 }
 
@@ -57,12 +57,20 @@ impl App {
     fn handle_key_event(&mut self, key_event: KeyEvent) {
         match key_event.code {
             KeyCode::Char('q') => self.exit(),
+            KeyCode::Char('b') => self.select_region(Region::Branches),
+            KeyCode::Char('c') => self.select_region(Region::Commits),
+            KeyCode::Char('d') => self.select_region(Region::Details),
+            KeyCode::Char('s') => self.select_region(Region::Stashes),
             _ => {}
         }
     }
 
     fn exit(&mut self) {
         self.exit = true;
+    }
+
+    fn select_region(&mut self, region: Region) {
+        self.selected_region = region;
     }
 }
 
@@ -85,23 +93,31 @@ impl Widget for &App {
 
         Block::bordered()
             .title(Region::Branches.as_str())
-            .style(Style::default().fg(Color::Blue))
+            .style(Style::default().fg(get_color(self, Region::Branches)))
             .border_set(border::THICK)
             .render(left_layout[0], buf);
         Block::bordered()
             .title(Region::Stashes.as_str())
-            .style(Style::default().fg(Color::Blue))
+            .style(Style::default().fg(get_color(self, Region::Stashes)))
             .border_set(border::THICK)
             .render(left_layout[1], buf);
         Block::bordered()
             .title(Region::Commits.as_str())
-            .style(Style::default().fg(Color::Blue))
+            .style(Style::default().fg(get_color(self, Region::Commits)))
             .border_set(border::THICK)
             .render(right_layout[0], buf);
         Block::bordered()
             .title(Region::Details.as_str())
-            .style(Style::default().fg(Color::Blue))
+            .style(Style::default().fg(get_color(self, Region::Details)))
             .border_set(border::THICK)
             .render(right_layout[1], buf);
+    }
+}
+
+fn get_color(app: &App, region: Region) -> Color {
+    if app.selected_region == region {
+        Color::Green
+    } else {
+        Color::Yellow
     }
 }
