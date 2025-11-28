@@ -1,4 +1,6 @@
-#[derive(Debug, Default, PartialEq)]
+use ratatui::style::Color;
+
+#[derive(Debug, Default, PartialEq, Eq, Clone, Copy)]
 pub enum Region {
     #[default]
     Commits,
@@ -14,6 +16,14 @@ impl Region {
             Region::Branches => "[b] Branches",
             Region::Details => "[d] Details",
             Region::Stashes => "[s] Stashes",
+        }
+    }
+
+    pub fn color(&self, is_selected: bool) -> Color {
+        if is_selected {
+            Color::Green
+        } else {
+            Color::Yellow
         }
     }
 }
