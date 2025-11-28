@@ -1,20 +1,17 @@
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
-use ratatui::layout::Direction;
-use ratatui::style::{Color, Style};
 use ratatui::{
     DefaultTerminal, Frame,
     buffer::Buffer,
-    layout::{Constraint, Layout, Rect},
-    style::Stylize,
-    symbols::border,
-    text::{Line, Text},
-    widgets::{Block, Paragraph, Widget},
+    layout::{Constraint, Direction, Layout, Rect},
+    widgets::Widget,
 };
 use std::io;
 
 use crate::regions::Region;
+use crate::ui::{branches, commits, details, stashes};
 
 mod regions;
+mod ui;
 
 fn main() -> io::Result<()> {
     let mut terminal = ratatui::init();
@@ -91,33 +88,9 @@ impl Widget for &App {
             .constraints(vec![Constraint::Percentage(70), Constraint::Percentage(30)])
             .split(outer_layout[1]);
 
-        Block::bordered()
-            .title(Region::Branches.as_str())
-            .style(Style::default().fg(get_color(self, Region::Branches)))
-            .border_set(border::THICK)
-            .render(left_layout[0], buf);
-        Block::bordered()
-            .title(Region::Stashes.as_str())
-            .style(Style::default().fg(get_color(self, Region::Stashes)))
-            .border_set(border::THICK)
-            .render(left_layout[1], buf);
-        Block::bordered()
-            .title(Region::Commits.as_str())
-            .style(Style::default().fg(get_color(self, Region::Commits)))
-            .border_set(border::THICK)
-            .render(right_layout[0], buf);
-        Block::bordered()
-            .title(Region::Details.as_str())
-            .style(Style::default().fg(get_color(self, Region::Details)))
-            .border_set(border::THICK)
-            .render(right_layout[1], buf);
-    }
-}
-
-fn get_color(app: &App, region: Region) -> Color {
-    if app.selected_region == region {
-        Color::Green
-    } else {
-        Color::Yellow
+        branches::panel(self.selected_region == Region::Branches).render(left_layout[0], buf);
+        stashes::panel(self.selected_region == Region::Stashes).render(left_layout[1], buf);
+        commits::panel(self.selected_region == Region::Commits).render(right_layout[0], buf);
+        details::panel(self.selected_region == Region::Details).render(right_layout[1], buf);
     }
 }
