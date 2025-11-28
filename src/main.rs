@@ -98,17 +98,17 @@ impl Widget for &App {
             .render(left_layout[0], buf);
         Block::bordered()
             .title(Region::Stashes.as_str())
-            .style(Style::default().fg(Color::Blue))
+            .style(Style::default().fg(get_color(self, Region::Stashes)))
             .border_set(border::THICK)
             .render(left_layout[1], buf);
         Block::bordered()
             .title(Region::Commits.as_str())
-            .style(Style::default().fg(Color::Blue))
+            .style(Style::default().fg(get_color(self, Region::Commits)))
             .border_set(border::THICK)
             .render(right_layout[0], buf);
         Block::bordered()
             .title(Region::Details.as_str())
-            .style(Style::default().fg(Color::Blue))
+            .style(Style::default().fg(get_color(self, Region::Details)))
             .border_set(border::THICK)
             .render(right_layout[1], buf);
     }
