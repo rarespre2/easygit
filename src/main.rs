@@ -7,9 +7,11 @@ use ratatui::{
 };
 use std::io;
 
+use crate::git::BranchInfo;
 use crate::regions::Region;
 use crate::ui::{branches, commits, details, stashes};
 
+mod git;
 mod regions;
 mod ui;
 
@@ -20,10 +22,23 @@ fn main() -> io::Result<()> {
     app_result
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct App {
     selected_region: Region,
     exit: bool,
+    selected_branch: BranchInfo,
+}
+
+impl Default for App {
+    fn default() -> Self {
+        let mut app = Self {
+            selected_region: Region::default(),
+            exit: false,
+            selected_branch: BranchInfo::default(),
+        };
+        app.refresh_branches();
+        app
+    }
 }
 
 impl App {
@@ -58,6 +73,11 @@ impl App {
             KeyCode::Char('c') => self.select_region(Region::Commits),
             KeyCode::Char('d') => self.select_region(Region::Details),
             KeyCode::Char('s') => self.select_region(Region::Stashes),
+            KeyCode::Up | KeyCode::Down | KeyCode::Enter | KeyCode::Delete | KeyCode::Char('x') => {
+                if self.selected_region == Region::Branches {
+                    branches::handle_key(&mut self.selected_branch, key_event.code);
+                }
+            }
             _ => {}
         }
     }
@@ -68,6 +88,11 @@ impl App {
 
     fn select_region(&mut self, region: Region) {
         self.selected_region = region;
+    }
+
+    fn refresh_branches(&mut self) {
+        let previous = std::mem::take(&mut self.selected_branch);
+        self.selected_branch = branches::refresh(previous);
     }
 }
 
@@ -88,7 +113,11 @@ impl Widget for &App {
             .constraints(vec![Constraint::Percentage(70), Constraint::Percentage(30)])
             .split(outer_layout[1]);
 
-        branches::panel(self.selected_region == Region::Branches).render(left_layout[0], buf);
+        branches::panel_with_child(
+            self.selected_region == Region::Branches,
+            branches::BranchList::new(&self.selected_branch),
+        )
+        .render(left_layout[0], buf);
         stashes::panel(self.selected_region == Region::Stashes).render(left_layout[1], buf);
         commits::panel(self.selected_region == Region::Commits).render(right_layout[0], buf);
         details::panel(self.selected_region == Region::Details).render(right_layout[1], buf);
