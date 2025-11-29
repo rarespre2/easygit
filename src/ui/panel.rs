@@ -8,7 +8,6 @@ use ratatui::{
 
 use crate::regions::Region;
 
-/// Empty placeholder so panels can be constructed without a child widget.
 pub struct Empty;
 
 impl Widget for Empty {

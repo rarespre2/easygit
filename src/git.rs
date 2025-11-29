@@ -47,6 +47,41 @@ pub fn checkout_branch_in(path: impl AsRef<Path>, branch: &str) -> Result<(), St
     }
 }
 
+pub fn create_branch(branch: &str) -> Result<(), String> {
+    create_branch_in(".", branch)
+}
+
+pub fn create_branch_in(path: impl AsRef<Path>, branch: &str) -> Result<(), String> {
+    if branch.trim().is_empty() {
+        return Err("Branch name cannot be empty".to_string());
+    }
+
+    let output = std::process::Command::new("git")
+        .arg("checkout")
+        .arg("-b")
+        .arg(branch)
+        .current_dir(path.as_ref())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .map_err(|err| format!("Failed to run git checkout -b: {err}"))?;
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        let message = String::from_utf8_lossy(&output.stderr);
+        let trimmed = message.trim();
+        if trimmed.is_empty() {
+            Err(format!(
+                "git checkout -b exited with status: {}",
+                output.status
+            ))
+        } else {
+            Err(format!("Failed to create branch {branch}: {trimmed}"))
+        }
+    }
+}
+
 pub fn delete_branch(branch: &str) -> Result<(), String> {
     delete_branch_in(".", branch)
 }
@@ -146,6 +181,23 @@ mod tests {
         let info = fetch_branch_info_in(repo.path());
 
         assert_eq!(info.current.as_deref(), Some("topic"));
+    }
+
+    #[test]
+    fn create_branch_creates_and_checks_out_new_branch() {
+        let repo = TestRepo::init().unwrap();
+        repo.write_file("file.txt", "content").unwrap();
+        repo.git(&["add", "."]).unwrap();
+        repo.git(&["commit", "-m", "init"]).unwrap();
+
+        create_branch_in(repo.path(), "feature").unwrap();
+        let info = fetch_branch_info_in(repo.path());
+
+        assert_eq!(info.current.as_deref(), Some("feature"));
+        assert_eq!(
+            info.branches,
+            vec!["feature".to_string(), "main".to_string()]
+        );
     }
 
     #[test]
