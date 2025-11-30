@@ -29,6 +29,7 @@ pub struct App {
     selected_region: Region,
     exit: bool,
     selected_branch: BranchInfo,
+    commits: commits::CommitsState,
     branch_input: Option<BranchInput>,
 }
 
@@ -38,6 +39,7 @@ impl Default for App {
             selected_region: Region::default(),
             exit: false,
             selected_branch: BranchInfo::default(),
+            commits: commits::CommitsState::default(),
             branch_input: None,
         };
         app.refresh_branches();
@@ -171,6 +173,11 @@ impl App {
     fn refresh_branches(&mut self) {
         let previous = std::mem::take(&mut self.selected_branch);
         self.selected_branch = branches::refresh(previous);
+        self.refresh_commits();
+    }
+
+    fn refresh_commits(&mut self) {
+        self.commits = commits::CommitsState::refresh();
     }
 
     fn start_branch_input(&mut self) {
@@ -200,6 +207,8 @@ impl App {
             }
             _ => {}
         }
+
+        self.refresh_commits();
     }
 
     fn submit_branch_input(&mut self) {
@@ -251,7 +260,11 @@ impl Widget for &App {
         )
         .render(left_layout[0], buf);
         stashes::panel(self.selected_region == Region::Stashes).render(left_layout[1], buf);
-        commits::panel(self.selected_region == Region::Commits).render(right_layout[0], buf);
+        commits::panel_with_child(
+            self.selected_region == Region::Commits,
+            commits::CommitList::new(&self.commits),
+        )
+        .render(right_layout[0], buf);
         details::panel(self.selected_region == Region::Details).render(right_layout[1], buf);
 
         if let Some(input) = &self.branch_input {
