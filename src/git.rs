@@ -393,17 +393,26 @@ fn branches_containing_commit(path: &Path, full_id: &str) -> Result<Vec<String>,
     Ok(branches)
 }
 
-fn branch_ahead_behind(path: &Path, branch: &str) -> Option<(usize, usize)> {
-    let upstream = upstream_for_branch(path, branch)?;
-    if upstream.is_empty() {
-        return None;
-    }
+fn branch_ahead_behind(
+    path: &Path,
+    branch: &str,
+    default_branch: Option<&str>,
+) -> Option<(usize, usize)> {
+    let target = upstream_for_branch(path, branch).or_else(|| {
+        default_branch
+            .filter(|candidate| *candidate != branch)
+            .map(|name| name.to_string())
+    })?;
 
+    ahead_behind_for_pair(path, branch, &target)
+}
+
+fn ahead_behind_for_pair(path: &Path, branch: &str, target: &str) -> Option<(usize, usize)> {
     let output = std::process::Command::new("git")
         .arg("rev-list")
         .arg("--left-right")
         .arg("--count")
-        .arg(format!("{branch}...{upstream}"))
+        .arg(format!("{branch}...{target}"))
         .current_dir(path)
         .output()
         .ok()?;
@@ -458,8 +467,11 @@ fn try_fetch_branch_info(path: impl AsRef<Path>) -> Result<BranchInfo, String> {
         .collect();
 
     branches.sort();
+    let default_branch = find_main_branch_in(path);
     for branch in branches.iter_mut() {
-        if let Some((ahead, behind)) = branch_ahead_behind(path, &branch.name) {
+        if let Some((ahead, behind)) =
+            branch_ahead_behind(path, &branch.name, default_branch.as_deref())
+        {
             branch.ahead = Some(ahead);
             branch.behind = Some(behind);
         }
@@ -623,6 +635,32 @@ mod tests {
 
         repo.git(&["branch", "--set-upstream-to=main", "feature"])
             .unwrap();
+
+        let info = fetch_branch_info_in(repo.path());
+        let feature = info
+            .branches
+            .iter()
+            .find(|b| b.name == "feature")
+            .expect("feature branch");
+        assert_eq!(feature.ahead, Some(1));
+        assert_eq!(feature.behind, Some(1));
+    }
+
+    #[test]
+    fn falls_back_to_main_when_upstream_missing() {
+        let repo = TestRepo::init().unwrap();
+        repo.write_file("file.txt", "content").unwrap();
+        repo.git(&["add", "."]).unwrap();
+        repo.git(&["commit", "-m", "init"]).unwrap();
+        repo.git(&["branch", "feature"]).unwrap();
+
+        repo.git(&["checkout", "feature"]).unwrap();
+        repo.write_file("file.txt", "feature change").unwrap();
+        repo.git(&["commit", "-am", "feature work"]).unwrap();
+
+        repo.git(&["checkout", "main"]).unwrap();
+        repo.write_file("file.txt", "main change").unwrap();
+        repo.git(&["commit", "-am", "main work"]).unwrap();
 
         let info = fetch_branch_info_in(repo.path());
         let feature = info

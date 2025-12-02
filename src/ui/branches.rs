@@ -214,10 +214,7 @@ impl Widget for BranchList<'_> {
                 ];
                 if indicator_len > 0 && width > prefix_len + 1 {
                     spans.push(Span::raw(" "));
-                    spans.push(Span::styled(
-                        indicator,
-                        Style::default().fg(indicator_color(branch)),
-                    ));
+                    spans.push(Span::raw(indicator));
                 }
 
                 let style = if is_current {
@@ -272,17 +269,6 @@ fn format_indicator(branch: &BranchSummary) -> String {
     format!("↑{ahead} ↓{behind}")
 }
 
-fn indicator_color(branch: &BranchSummary) -> Color {
-    let ahead = branch.ahead.unwrap_or(0) > 0;
-    let behind = branch.behind.unwrap_or(0) > 0;
-    match (ahead, behind) {
-        (true, true) => Color::Yellow,
-        (true, false) => Color::Green,
-        (false, true) => Color::Red,
-        _ => Color::Gray,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -305,12 +291,10 @@ mod tests {
             behind: Some(1),
         };
         assert_eq!(format_indicator(&branch), "↑2 ↓1");
-        assert_eq!(indicator_color(&branch), Color::Yellow);
 
         branch.ahead = Some(0);
         branch.behind = Some(0);
         assert_eq!(format_indicator(&branch), "↑0 ↓0");
-        assert_eq!(indicator_color(&branch), Color::Gray);
 
         branch.ahead = None;
         branch.behind = None;
