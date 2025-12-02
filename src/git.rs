@@ -7,9 +7,16 @@ pub struct Commit {
     pub branches: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct BranchSummary {
+    pub name: String,
+    pub ahead: Option<usize>,
+    pub behind: Option<usize>,
+}
+
 #[derive(Debug, Default)]
 pub struct BranchInfo {
-    pub branches: Vec<String>,
+    pub branches: Vec<BranchSummary>,
     pub current: Option<String>,
     pub status: Option<String>,
     pub hovered: Option<usize>,
@@ -386,7 +393,48 @@ fn branches_containing_commit(path: &Path, full_id: &str) -> Result<Vec<String>,
     Ok(branches)
 }
 
+fn branch_ahead_behind(path: &Path, branch: &str) -> Option<(usize, usize)> {
+    let upstream = upstream_for_branch(path, branch)?;
+    if upstream.is_empty() {
+        return None;
+    }
+
+    let output = std::process::Command::new("git")
+        .arg("rev-list")
+        .arg("--left-right")
+        .arg("--count")
+        .arg(format!("{branch}...{upstream}"))
+        .current_dir(path)
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut parts = stdout.trim().split_whitespace();
+    let ahead = parts.next()?.parse().ok()?;
+    let behind = parts.next().unwrap_or("0").parse().ok()?;
+    Some((ahead, behind))
+}
+
+fn upstream_for_branch(path: &Path, branch: &str) -> Option<String> {
+    let output = std::process::Command::new("git")
+        .arg("rev-parse")
+        .arg("--abbrev-ref")
+        .arg(format!("{branch}@{{upstream}}"))
+        .current_dir(path)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
 fn try_fetch_branch_info(path: impl AsRef<Path>) -> Result<BranchInfo, String> {
+    let path = path.as_ref();
     let repo = gix::discover(path).map_err(|err| format!("Not a git repository: {err}"))?;
 
     let current = repo
@@ -395,15 +443,27 @@ fn try_fetch_branch_info(path: impl AsRef<Path>) -> Result<BranchInfo, String> {
         .referent_name()
         .map(|name| name.shorten().to_string());
 
-    let mut branches: Vec<String> = repo
+    let mut branches: Vec<BranchSummary> = repo
         .references()
         .map_err(|err| format!("Failed to list references: {err}"))?
         .prefixed("refs/heads/")
         .map_err(|err| format!("Failed to filter branches: {err}"))?
-        .filter_map(|reference| reference.ok().map(|r| r.name().shorten().to_string()))
+        .filter_map(|reference| {
+            reference.ok().map(|r| BranchSummary {
+                name: r.name().shorten().to_string(),
+                ahead: None,
+                behind: None,
+            })
+        })
         .collect();
 
     branches.sort();
+    for branch in branches.iter_mut() {
+        if let Some((ahead, behind)) = branch_ahead_behind(path, &branch.name) {
+            branch.ahead = Some(ahead);
+            branch.behind = Some(behind);
+        }
+    }
 
     Ok(BranchInfo {
         branches,
@@ -437,7 +497,7 @@ mod tests {
 
         assert_eq!(info.current.as_deref(), Some("main"));
         assert_eq!(
-            info.branches,
+            branch_names(&info),
             vec!["feature".to_string(), "main".to_string()]
         );
     }
@@ -468,7 +528,7 @@ mod tests {
 
         assert_eq!(info.current.as_deref(), Some("feature"));
         assert_eq!(
-            info.branches,
+            branch_names(&info),
             vec!["feature".to_string(), "main".to_string()]
         );
     }
@@ -484,7 +544,7 @@ mod tests {
         delete_branch_in(repo.path(), "old").unwrap();
         let info = fetch_branch_info_in(repo.path());
 
-        assert_eq!(info.branches, vec!["main".to_string()]);
+        assert_eq!(branch_names(&info), vec!["main".to_string()]);
     }
 
     #[test]
@@ -539,6 +599,39 @@ mod tests {
                 .iter()
                 .any(|c| c.summary == "base" && c.branches == vec!["main".to_string()])
         );
+    }
+
+    fn branch_names(info: &BranchInfo) -> Vec<String> {
+        info.branches.iter().map(|b| b.name.clone()).collect()
+    }
+
+    #[test]
+    fn fetches_ahead_behind_counts_when_upstream_set() {
+        let repo = TestRepo::init().unwrap();
+        repo.write_file("file.txt", "content").unwrap();
+        repo.git(&["add", "."]).unwrap();
+        repo.git(&["commit", "-m", "init"]).unwrap();
+        repo.git(&["branch", "feature"]).unwrap();
+
+        repo.git(&["checkout", "feature"]).unwrap();
+        repo.write_file("file.txt", "feature change").unwrap();
+        repo.git(&["commit", "-am", "feature"]).unwrap();
+
+        repo.git(&["checkout", "main"]).unwrap();
+        repo.write_file("file.txt", "main change").unwrap();
+        repo.git(&["commit", "-am", "main"]).unwrap();
+
+        repo.git(&["branch", "--set-upstream-to=main", "feature"])
+            .unwrap();
+
+        let info = fetch_branch_info_in(repo.path());
+        let feature = info
+            .branches
+            .iter()
+            .find(|b| b.name == "feature")
+            .expect("feature branch");
+        assert_eq!(feature.ahead, Some(1));
+        assert_eq!(feature.behind, Some(1));
     }
 
     #[test]

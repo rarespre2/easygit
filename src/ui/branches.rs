@@ -3,10 +3,11 @@ use ratatui::{
     buffer::Buffer,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
+    text::{Line, Span},
     widgets::{List, ListItem, Paragraph, Widget},
 };
 
-use crate::git::{self, BranchInfo};
+use crate::git::{self, BranchInfo, BranchSummary};
 use crate::regions::Region;
 
 use super::panel::PanelBlock;
@@ -34,9 +35,12 @@ pub fn handle_key(info: &mut BranchInfo, key: KeyCode) {
 pub fn refresh(prev: BranchInfo) -> BranchInfo {
     let mut current = git::fetch_branch_info();
     current.hovered = preferred_hover_index(&current, prev.hovered);
-    current.selected = prev
-        .selected
-        .filter(|selected| current.branches.iter().any(|name| name == selected));
+    current.selected = prev.selected.filter(|selected| {
+        current
+            .branches
+            .iter()
+            .any(|branch| &branch.name == selected)
+    });
     current
 }
 
@@ -65,21 +69,21 @@ fn move_hover_down(info: &mut BranchInfo) {
 fn select_hovered(info: &mut BranchInfo) {
     if let Some(index) = info.hovered {
         if let Some(name) = info.branches.get(index) {
-            info.current = Some(name.clone());
-            info.selected = Some(name.clone());
+            info.current = Some(name.name.clone());
+            info.selected = Some(name.name.clone());
         }
     }
 }
 
 fn checkout_hovered(info: &mut BranchInfo) {
     if let Some(index) = info.hovered {
-        if let Some(name) = info.branches.get(index).cloned() {
-            match git::checkout_branch(&name) {
+        if let Some(branch) = info.branches.get(index).cloned() {
+            match git::checkout_branch(&branch.name) {
                 Ok(()) => {
                     let previous = std::mem::take(info);
                     let mut refreshed = refresh(previous);
-                    refreshed.selected = Some(name.clone());
-                    refreshed.current = Some(name);
+                    refreshed.selected = Some(branch.name.clone());
+                    refreshed.current = Some(branch.name);
                     *info = refreshed;
                 }
                 Err(err) => {
@@ -92,13 +96,13 @@ fn checkout_hovered(info: &mut BranchInfo) {
 
 fn delete_hovered(info: &mut BranchInfo) {
     if let Some(index) = info.hovered {
-        if let Some(name) = info.branches.get(index).cloned() {
-            if info.current.as_deref() == Some(name.as_str()) {
+        if let Some(branch) = info.branches.get(index).cloned() {
+            if info.current.as_deref() == Some(branch.name.as_str()) {
                 info.status = Some("Cannot delete the current branch".to_string());
                 return;
             }
 
-            match git::delete_branch(&name) {
+            match git::delete_branch(&branch.name) {
                 Ok(()) => {
                     let previous = std::mem::take(info);
                     *info = refresh(previous);
@@ -117,7 +121,11 @@ fn preferred_hover_index(info: &BranchInfo, previous: Option<usize>) -> Option<u
     }
 
     if let Some(current_name) = &info.current {
-        if let Some(index) = info.branches.iter().position(|name| name == current_name) {
+        if let Some(index) = info
+            .branches
+            .iter()
+            .position(|branch| &branch.name == current_name)
+        {
             return Some(index);
         }
     }
@@ -130,7 +138,7 @@ fn preferred_hover_index(info: &BranchInfo, previous: Option<usize>) -> Option<u
 }
 
 pub struct BranchList<'a> {
-    branches: &'a [String],
+    branches: &'a [BranchSummary],
     current: Option<&'a str>,
     status: Option<&'a str>,
     hovered: Option<usize>,
@@ -175,24 +183,48 @@ impl Widget for BranchList<'_> {
             area
         };
 
+        let width = list_area.width as usize;
         let items: Vec<ListItem> = self
             .branches
             .iter()
             .enumerate()
-            .map(|(index, name)| {
-                let is_current = Some(name.as_str()) == self.current;
+            .map(|(index, branch)| {
+                let is_current = Some(branch.name.as_str()) == self.current;
                 let is_hovered = Some(index) == self.hovered;
-                let is_selected = Some(name.as_str()) == self.selected;
+                let is_selected = Some(branch.name.as_str()) == self.selected;
                 let prefix = format!(
                     "{}{}",
                     if is_hovered { ">" } else { " " },
                     if is_current { "*" } else { " " }
                 );
-                let content = if is_current {
-                    format!("{prefix} {name}")
+
+                let indicator = format_indicator(branch);
+                let indicator_width = indicator_width(indicator.len(), width, prefix.len());
+                let name_width = width
+                    .saturating_sub(prefix.len() + indicator_width + 1)
+                    .max(0);
+                let display_name = truncate_with_ellipsis(&branch.name, name_width);
+                let padding = " ".repeat(name_width.saturating_sub(display_name.len()));
+                let indicator_display = if indicator_width > 0 {
+                    format!("{indicator:>width$}", width = indicator_width)
                 } else {
-                    format!("{prefix} {name}")
+                    String::new()
                 };
+
+                let mut spans = vec![
+                    Span::raw(prefix),
+                    Span::raw(" "),
+                    Span::raw(display_name),
+                    Span::raw(padding),
+                ];
+                if indicator_width > 0 {
+                    spans.push(Span::raw(" "));
+                    spans.push(Span::styled(
+                        indicator_display,
+                        Style::default().fg(indicator_color(branch)),
+                    ));
+                }
+
                 let style = if is_current {
                     Style::default()
                         .fg(Color::Green)
@@ -207,11 +239,104 @@ impl Widget for BranchList<'_> {
                 } else {
                     Modifier::empty()
                 });
-                ListItem::new(content).style(style)
+                ListItem::new(Line::from(spans)).style(style)
             })
             .collect();
 
         let list = List::new(items);
         list.render(list_area, buf);
+    }
+}
+
+fn indicator_width(indicator_len: usize, total_width: usize, prefix_len: usize) -> usize {
+    if total_width <= prefix_len + 1 {
+        return 0;
+    }
+    let desired = indicator_len.max(6).min(10);
+    desired.min(total_width.saturating_sub(prefix_len + 1))
+}
+
+fn truncate_with_ellipsis(text: &str, max_width: usize) -> String {
+    if max_width == 0 {
+        return String::new();
+    }
+    let text_len = text.chars().count();
+    if text_len <= max_width {
+        return text.to_string();
+    }
+    if max_width == 1 {
+        return "…".to_string();
+    }
+    let mut truncated = String::new();
+    for ch in text.chars().take(max_width - 1) {
+        truncated.push(ch);
+    }
+    truncated.push('…');
+    truncated
+}
+
+fn format_indicator(branch: &BranchSummary) -> String {
+    let ahead = branch.ahead.unwrap_or(0);
+    let behind = branch.behind.unwrap_or(0);
+    if branch.ahead.is_none() && branch.behind.is_none() {
+        return "—".to_string();
+    }
+    let mut parts = Vec::new();
+    if ahead > 0 {
+        parts.push(format!("↑{ahead}"));
+    }
+    if behind > 0 {
+        parts.push(format!("↓{behind}"));
+    }
+    if parts.is_empty() {
+        "✓".to_string()
+    } else {
+        parts.join(" ")
+    }
+}
+
+fn indicator_color(branch: &BranchSummary) -> Color {
+    let ahead = branch.ahead.unwrap_or(0) > 0;
+    let behind = branch.behind.unwrap_or(0) > 0;
+    match (ahead, behind) {
+        (true, true) => Color::Yellow,
+        (true, false) => Color::Green,
+        (false, true) => Color::Red,
+        _ => Color::Gray,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn truncates_and_adds_ellipsis() {
+        assert_eq!(
+            truncate_with_ellipsis("feature/some-long-name", 10),
+            "feature/s…"
+        );
+        assert_eq!(truncate_with_ellipsis("short", 10), "short");
+        assert_eq!(truncate_with_ellipsis("long", 1), "…");
+    }
+
+    #[test]
+    fn formats_indicator_for_ahead_behind() {
+        let mut branch = BranchSummary {
+            name: "feature".into(),
+            ahead: Some(2),
+            behind: Some(1),
+        };
+        assert_eq!(format_indicator(&branch), "↑2 ↓1");
+        assert_eq!(indicator_color(&branch), Color::Yellow);
+
+        branch.ahead = Some(0);
+        branch.behind = Some(0);
+        assert_eq!(format_indicator(&branch), "✓");
+        assert_eq!(indicator_color(&branch), Color::Gray);
+
+        branch.ahead = None;
+        branch.behind = None;
+        assert_eq!(format_indicator(&branch), "—");
     }
 }
