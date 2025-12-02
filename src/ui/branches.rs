@@ -183,7 +183,6 @@ impl Widget for BranchList<'_> {
             area
         };
 
-        let width = list_area.width as usize;
         let items: Vec<ListItem> = self
             .branches
             .iter()
@@ -199,17 +198,13 @@ impl Widget for BranchList<'_> {
                 );
 
                 let indicator = format_indicator(branch);
-                let indicator_width = indicator_width(indicator.len(), width, prefix.len());
-                let name_width = width
-                    .saturating_sub(prefix.len() + indicator_width + 1)
-                    .max(0);
-                let display_name = truncate_with_ellipsis(&branch.name, name_width);
-                let padding = " ".repeat(name_width.saturating_sub(display_name.len()));
-                let indicator_display = if indicator_width > 0 {
-                    format!("{indicator:>width$}", width = indicator_width)
-                } else {
-                    String::new()
-                };
+                let indicator_len = visible_width(&indicator);
+                let width = list_area.width as usize;
+                let prefix_len = visible_width(&prefix);
+                let available_name = width.saturating_sub(prefix_len + indicator_len + 2).max(0);
+                let display_name = truncate_with_ellipsis(&branch.name, available_name);
+                let name_len = visible_width(&display_name);
+                let padding = " ".repeat(available_name.saturating_sub(name_len));
 
                 let mut spans = vec![
                     Span::raw(prefix),
@@ -217,10 +212,10 @@ impl Widget for BranchList<'_> {
                     Span::raw(display_name),
                     Span::raw(padding),
                 ];
-                if indicator_width > 0 {
+                if indicator_len > 0 && width > prefix_len + 1 {
                     spans.push(Span::raw(" "));
                     spans.push(Span::styled(
-                        indicator_display,
+                        indicator,
                         Style::default().fg(indicator_color(branch)),
                     ));
                 }
@@ -248,12 +243,8 @@ impl Widget for BranchList<'_> {
     }
 }
 
-fn indicator_width(indicator_len: usize, total_width: usize, prefix_len: usize) -> usize {
-    if total_width <= prefix_len + 1 {
-        return 0;
-    }
-    let desired = indicator_len.max(6).min(10);
-    desired.min(total_width.saturating_sub(prefix_len + 1))
+fn visible_width(text: &str) -> usize {
+    text.chars().count()
 }
 
 fn truncate_with_ellipsis(text: &str, max_width: usize) -> String {
@@ -278,21 +269,7 @@ fn truncate_with_ellipsis(text: &str, max_width: usize) -> String {
 fn format_indicator(branch: &BranchSummary) -> String {
     let ahead = branch.ahead.unwrap_or(0);
     let behind = branch.behind.unwrap_or(0);
-    if branch.ahead.is_none() && branch.behind.is_none() {
-        return "—".to_string();
-    }
-    let mut parts = Vec::new();
-    if ahead > 0 {
-        parts.push(format!("↑{ahead}"));
-    }
-    if behind > 0 {
-        parts.push(format!("↓{behind}"));
-    }
-    if parts.is_empty() {
-        "✓".to_string()
-    } else {
-        parts.join(" ")
-    }
+    format!("↑{ahead} ↓{behind}")
 }
 
 fn indicator_color(branch: &BranchSummary) -> Color {
@@ -332,11 +309,11 @@ mod tests {
 
         branch.ahead = Some(0);
         branch.behind = Some(0);
-        assert_eq!(format_indicator(&branch), "✓");
+        assert_eq!(format_indicator(&branch), "↑0 ↓0");
         assert_eq!(indicator_color(&branch), Color::Gray);
 
         branch.ahead = None;
         branch.behind = None;
-        assert_eq!(format_indicator(&branch), "—");
+        assert_eq!(format_indicator(&branch), "↑0 ↓0");
     }
 }
