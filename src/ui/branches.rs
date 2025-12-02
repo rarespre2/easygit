@@ -128,10 +128,7 @@ fn pull_current_branch(info: &mut BranchInfo) {
     };
 
     match git::pull_current_branch() {
-        Ok(()) => {
-            let previous = mem::take(info);
-            *info = refresh(previous);
-        }
+        Ok(()) => refresh_after_remote_action(info),
         Err(err) => info.status = Some(format!("Pull {current} failed: {err}")),
     }
 }
@@ -143,12 +140,15 @@ fn push_current_branch(info: &mut BranchInfo) {
     };
 
     match git::push_current_branch() {
-        Ok(()) => {
-            let previous = mem::take(info);
-            *info = refresh(previous);
-        }
+        Ok(()) => refresh_after_remote_action(info),
         Err(err) => info.status = Some(format!("Push {current} failed: {err}")),
     }
+}
+
+fn refresh_after_remote_action(info: &mut BranchInfo) {
+    let mut previous = mem::take(info);
+    previous.status = None;
+    *info = refresh(previous);
 }
 
 fn preferred_hover_index(info: &BranchInfo, previous: Option<usize>) -> Option<usize> {

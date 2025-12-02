@@ -167,24 +167,20 @@ pub fn pull_current_branch() -> Result<(), String> {
 }
 
 pub fn pull_current_branch_in(path: impl AsRef<Path>) -> Result<(), String> {
-    let output = std::process::Command::new("git")
-        .arg("pull")
-        .arg("--ff-only")
-        .current_dir(path.as_ref())
-        .output()
-        .map_err(|err| format!("Failed to run git pull: {err}"))?;
+    let path = path.as_ref();
+    let branch = current_branch_name_in(path)
+        .ok_or_else(|| "Failed to read current branch name".to_string())?;
 
-    if output.status.success() {
-        Ok(())
-    } else {
-        let message = String::from_utf8_lossy(&output.stderr);
-        let trimmed = message.trim();
-        if trimmed.is_empty() {
-            Err(format!("git pull exited with status: {}", output.status))
-        } else {
-            Err(trimmed.to_string())
-        }
+    let upstream = upstream_for_branch(path, &branch);
+    if upstream.is_none() {
+        let remote = remote_for_branch(path, &branch)
+            .or_else(|| first_remote(path))
+            .ok_or_else(|| "No remote configured for current branch".to_string())?;
+        git_fetch(path, &remote)?;
+        set_branch_upstream(path, &branch, &remote, &branch)?;
     }
+
+    git_pull_ff_only(path)
 }
 
 pub fn push_current_branch() -> Result<(), String> {
@@ -195,34 +191,15 @@ pub fn push_current_branch_in(path: impl AsRef<Path>) -> Result<(), String> {
     let path = path.as_ref();
     let branch = current_branch_name_in(path)
         .ok_or_else(|| "Failed to read current branch name".to_string())?;
-    let has_upstream = upstream_for_branch(path, &branch).is_some();
+    let upstream = upstream_for_branch(path, &branch);
+    let remote = upstream
+        .as_deref()
+        .map(str::to_string)
+        .or_else(|| remote_for_branch(path, &branch))
+        .or_else(|| first_remote(path))
+        .ok_or_else(|| "No remote configured for current branch".to_string())?;
 
-    let mut cmd = std::process::Command::new("git");
-    cmd.current_dir(path);
-    if has_upstream {
-        cmd.arg("push");
-    } else {
-        cmd.arg("push")
-            .arg("--set-upstream")
-            .arg("origin")
-            .arg(&branch);
-    }
-
-    let output = cmd
-        .output()
-        .map_err(|err| format!("Failed to run git push: {err}"))?;
-
-    if output.status.success() {
-        Ok(())
-    } else {
-        let message = String::from_utf8_lossy(&output.stderr);
-        let trimmed = message.trim();
-        if trimmed.is_empty() {
-            Err(format!("git push exited with status: {}", output.status))
-        } else {
-            Err(trimmed.to_string())
-        }
-    }
+    git_push(path, &remote, &branch, upstream.is_some())
 }
 
 pub fn fetch_commits() -> Result<Vec<Commit>, String> {
@@ -517,6 +494,114 @@ fn current_branch_name_in(path: &Path) -> Option<String> {
         return None;
     }
     Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn git_pull_ff_only(path: &Path) -> Result<(), String> {
+    run_git_command(path, ["pull", "--ff-only"], "git pull")
+}
+
+fn git_push(path: &Path, remote: &str, branch: &str, has_upstream: bool) -> Result<(), String> {
+    let mut cmd = std::process::Command::new("git");
+    cmd.current_dir(path);
+    if has_upstream {
+        cmd.arg("push");
+    } else {
+        cmd.arg("push")
+            .arg("--set-upstream")
+            .arg(remote)
+            .arg(branch);
+    }
+
+    let output = cmd
+        .output()
+        .map_err(|err| format!("Failed to run git push: {err}"))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(format_git_error("git push", &output))
+    }
+}
+
+fn git_fetch(path: &Path, remote: &str) -> Result<(), String> {
+    run_git_command(path, ["fetch", remote], "git fetch")
+}
+
+fn run_git_command<const N: usize>(
+    path: &Path,
+    args: [&str; N],
+    label: &str,
+) -> Result<(), String> {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(path)
+        .output()
+        .map_err(|err| format!("Failed to run {label}: {err}"))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(format_git_error(label, &output))
+    }
+}
+
+fn format_git_error(label: &str, output: &std::process::Output) -> String {
+    let message = String::from_utf8_lossy(&output.stderr);
+    let trimmed = message.trim();
+    if trimmed.is_empty() {
+        format!("{label} exited with status: {}", output.status)
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn remote_for_branch(path: &Path, branch: &str) -> Option<String> {
+    git_config_value(path, &format!("branch.{branch}.remote"))
+}
+
+fn first_remote(path: &Path) -> Option<String> {
+    let output = std::process::Command::new("git")
+        .arg("remote")
+        .current_dir(path)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(|line| line.trim().to_string())
+        .find(|line| !line.is_empty())
+}
+
+fn git_config_value(path: &Path, key: &str) -> Option<String> {
+    let output = std::process::Command::new("git")
+        .arg("config")
+        .arg("--get")
+        .arg(key)
+        .current_dir(path)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn set_branch_upstream(
+    path: &Path,
+    branch: &str,
+    remote: &str,
+    remote_branch: &str,
+) -> Result<(), String> {
+    run_git_command(
+        path,
+        [
+            "branch",
+            "--set-upstream-to",
+            &format!("{remote}/{remote_branch}"),
+            branch,
+        ],
+        "git branch --set-upstream-to",
+    )
 }
 
 fn try_fetch_branch_info(path: impl AsRef<Path>) -> Result<BranchInfo, String> {
