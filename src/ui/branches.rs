@@ -1,3 +1,5 @@
+use std::mem;
+
 use crossterm::event::KeyCode;
 use ratatui::{
     buffer::Buffer,
@@ -19,7 +21,9 @@ pub fn panel(selected: bool) -> BranchesPanel {
 }
 
 pub fn panel_with_child<W: Widget>(selected: bool, child: W) -> BranchesPanel<W> {
-    PanelBlock::with_child(Region::Branches, selected, child)
+    let footer = Line::from("[u] Pull   [p] Push")
+        .style(Style::default().fg(Region::Branches.color(selected)));
+    PanelBlock::with_child(Region::Branches, selected, child).with_footer(footer)
 }
 
 pub fn handle_key(info: &mut BranchInfo, key: KeyCode) {
@@ -28,6 +32,8 @@ pub fn handle_key(info: &mut BranchInfo, key: KeyCode) {
         KeyCode::Down => move_hover_down(info),
         KeyCode::Enter => checkout_hovered(info),
         KeyCode::Char('x') | KeyCode::Delete => delete_hovered(info),
+        KeyCode::Char('u') => pull_current_branch(info),
+        KeyCode::Char('p') => push_current_branch(info),
         _ => {}
     }
 }
@@ -112,6 +118,36 @@ fn delete_hovered(info: &mut BranchInfo) {
                 }
             }
         }
+    }
+}
+
+fn pull_current_branch(info: &mut BranchInfo) {
+    let Some(current) = info.current.clone() else {
+        info.status = Some("No current branch to pull".to_string());
+        return;
+    };
+
+    match git::pull_current_branch() {
+        Ok(()) => {
+            let previous = mem::take(info);
+            *info = refresh(previous);
+        }
+        Err(err) => info.status = Some(format!("Pull {current} failed: {err}")),
+    }
+}
+
+fn push_current_branch(info: &mut BranchInfo) {
+    let Some(current) = info.current.clone() else {
+        info.status = Some("No current branch to push".to_string());
+        return;
+    };
+
+    match git::push_current_branch() {
+        Ok(()) => {
+            let previous = mem::take(info);
+            *info = refresh(previous);
+        }
+        Err(err) => info.status = Some(format!("Push {current} failed: {err}")),
     }
 }
 

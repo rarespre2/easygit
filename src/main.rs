@@ -7,7 +7,10 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph, Widget},
 };
-use std::io;
+use std::{
+    io,
+    time::{Duration, Instant},
+};
 
 use crate::git::{BranchInfo, RepoStatus};
 use crate::regions::Region;
@@ -33,6 +36,8 @@ pub struct App {
     hovered_commit_id: Option<String>,
     branch_input: Option<BranchInput>,
     repo_status: RepoStatus,
+    last_refresh: Instant,
+    refresh_interval: Duration,
 }
 
 impl Default for App {
@@ -45,9 +50,10 @@ impl Default for App {
             hovered_commit_id: None,
             branch_input: None,
             repo_status: RepoStatus::default(),
+            last_refresh: Instant::now(),
+            refresh_interval: Duration::from_millis(1000),
         };
-        app.refresh_branches();
-        app.refresh_status();
+        app.refresh_all();
         app
     }
 }
@@ -132,7 +138,7 @@ impl BranchInput {
 impl App {
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> io::Result<()> {
         while !self.exit {
-            self.refresh_status();
+            self.refresh_if_due();
             terminal.draw(|frame| self.draw(frame))?;
             self.handle_events()?;
         }
@@ -143,7 +149,24 @@ impl App {
         frame.render_widget(self, frame.area());
     }
 
+    fn refresh_if_due(&mut self) {
+        if self.last_refresh.elapsed() >= self.refresh_interval {
+            self.refresh_all();
+            self.last_refresh = Instant::now();
+        }
+    }
+
+    fn refresh_all(&mut self) {
+        self.refresh_branches();
+        self.refresh_status();
+        self.last_refresh = Instant::now();
+    }
+
     fn handle_events(&mut self) -> io::Result<()> {
+        if !event::poll(self.refresh_interval)? {
+            return Ok(());
+        }
+
         if let Event::Key(key_event) = event::read()? {
             if key_event.kind == KeyEventKind::Press {
                 self.handle_key_event(key_event);

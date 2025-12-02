@@ -162,6 +162,69 @@ pub fn delete_branch_in(path: impl AsRef<Path>, branch: &str) -> Result<(), Stri
     }
 }
 
+pub fn pull_current_branch() -> Result<(), String> {
+    pull_current_branch_in(".")
+}
+
+pub fn pull_current_branch_in(path: impl AsRef<Path>) -> Result<(), String> {
+    let output = std::process::Command::new("git")
+        .arg("pull")
+        .arg("--ff-only")
+        .current_dir(path.as_ref())
+        .output()
+        .map_err(|err| format!("Failed to run git pull: {err}"))?;
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        let message = String::from_utf8_lossy(&output.stderr);
+        let trimmed = message.trim();
+        if trimmed.is_empty() {
+            Err(format!("git pull exited with status: {}", output.status))
+        } else {
+            Err(trimmed.to_string())
+        }
+    }
+}
+
+pub fn push_current_branch() -> Result<(), String> {
+    push_current_branch_in(".")
+}
+
+pub fn push_current_branch_in(path: impl AsRef<Path>) -> Result<(), String> {
+    let path = path.as_ref();
+    let branch = current_branch_name_in(path)
+        .ok_or_else(|| "Failed to read current branch name".to_string())?;
+    let has_upstream = upstream_for_branch(path, &branch).is_some();
+
+    let mut cmd = std::process::Command::new("git");
+    cmd.current_dir(path);
+    if has_upstream {
+        cmd.arg("push");
+    } else {
+        cmd.arg("push")
+            .arg("--set-upstream")
+            .arg("origin")
+            .arg(&branch);
+    }
+
+    let output = cmd
+        .output()
+        .map_err(|err| format!("Failed to run git push: {err}"))?;
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        let message = String::from_utf8_lossy(&output.stderr);
+        let trimmed = message.trim();
+        if trimmed.is_empty() {
+            Err(format!("git push exited with status: {}", output.status))
+        } else {
+            Err(trimmed.to_string())
+        }
+    }
+}
+
 pub fn fetch_commits() -> Result<Vec<Commit>, String> {
     fetch_commits_in(".")
 }
@@ -442,6 +505,20 @@ fn upstream_for_branch(path: &Path, branch: &str) -> Option<String> {
     Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
+fn current_branch_name_in(path: &Path) -> Option<String> {
+    let output = std::process::Command::new("git")
+        .arg("rev-parse")
+        .arg("--abbrev-ref")
+        .arg("HEAD")
+        .current_dir(path)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
 fn try_fetch_branch_info(path: impl AsRef<Path>) -> Result<BranchInfo, String> {
     let path = path.as_ref();
     let repo = gix::discover(path).map_err(|err| format!("Not a git repository: {err}"))?;
@@ -492,7 +569,7 @@ mod tests {
     use std::{
         fs::{self, File},
         io::Write,
-        path::PathBuf,
+        path::{Path, PathBuf},
         process::Command,
         time::{SystemTime, UNIX_EPOCH},
     };
@@ -673,6 +750,89 @@ mod tests {
     }
 
     #[test]
+    fn pushes_current_branch_to_remote() {
+        let repo = TestRepo::init().unwrap();
+        repo.write_file("file.txt", "content").unwrap();
+        repo.git(&["add", "."]).unwrap();
+        repo.git(&["commit", "-m", "init"]).unwrap();
+
+        let remote = create_bare_repo().unwrap();
+        repo.add_remote("origin", &remote).unwrap();
+
+        push_current_branch_in(repo.path()).unwrap();
+
+        let status = Command::new("git")
+            .arg("--git-dir")
+            .arg(remote.to_str().unwrap())
+            .arg("show-ref")
+            .arg("--verify")
+            .arg("refs/heads/main")
+            .status()
+            .expect("git show-ref");
+        assert!(status.success(), "expected remote to have main branch");
+        let _ = std::fs::remove_dir_all(remote);
+    }
+
+    #[test]
+    fn pulls_latest_changes_from_remote() {
+        let repo = TestRepo::init().unwrap();
+        repo.write_file("file.txt", "content").unwrap();
+        repo.git(&["add", "."]).unwrap();
+        repo.git(&["commit", "-m", "init"]).unwrap();
+
+        let remote = create_bare_repo().unwrap();
+        repo.add_remote("origin", &remote).unwrap();
+        push_current_branch_in(repo.path()).unwrap();
+
+        Command::new("git")
+            .arg("--git-dir")
+            .arg(remote.to_str().unwrap())
+            .arg("symbolic-ref")
+            .arg("HEAD")
+            .arg("refs/heads/main")
+            .status()
+            .expect("set remote HEAD");
+
+        let clone_path = clone_repo(&remote).unwrap();
+        let clone_file = clone_path.join("file.txt");
+        let mut contents = std::fs::read_to_string(&clone_file).expect("read clone file");
+        contents.push_str("\nremote change");
+        std::fs::write(&clone_file, contents).expect("write clone file");
+
+        Command::new("git")
+            .arg("-C")
+            .arg(clone_path.as_os_str())
+            .arg("add")
+            .arg(".")
+            .status()
+            .expect("git add");
+        Command::new("git")
+            .arg("-C")
+            .arg(clone_path.as_os_str())
+            .arg("commit")
+            .arg("-m")
+            .arg("remote change")
+            .status()
+            .expect("git commit");
+        Command::new("git")
+            .arg("-C")
+            .arg(clone_path.as_os_str())
+            .arg("push")
+            .status()
+            .expect("git push");
+
+        pull_current_branch_in(repo.path()).unwrap();
+        let contents = std::fs::read_to_string(repo.path().join("file.txt")).unwrap();
+        assert!(
+            contents.contains("remote change"),
+            "pull should bring remote change"
+        );
+
+        let _ = std::fs::remove_dir_all(remote);
+        let _ = std::fs::remove_dir_all(clone_path);
+    }
+
+    #[test]
     fn parses_porcelain_lines_into_changes() {
         let modified = parse_status_line(" M src/main.rs").unwrap();
         assert_eq!(
@@ -730,6 +890,53 @@ mod tests {
         assert!(status.error.is_none());
     }
 
+    fn create_bare_repo() -> Result<PathBuf, String> {
+        let path = unique_path("remote");
+        let status = Command::new("git")
+            .arg("init")
+            .arg("--bare")
+            .arg(&path)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .status()
+            .map_err(|err| format!("Failed to run git init --bare: {err}"))?;
+        if status.success() {
+            Ok(path)
+        } else {
+            Err("git init --bare failed".into())
+        }
+    }
+
+    fn clone_repo(remote: &Path) -> Result<PathBuf, String> {
+        let path = unique_path("clone");
+        let status = Command::new("git")
+            .arg("clone")
+            .arg(remote.as_os_str())
+            .arg(&path)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .status()
+            .map_err(|err| format!("Failed to run git clone: {err}"))?;
+        if status.success() {
+            Ok(path)
+        } else {
+            Err("git clone failed".into())
+        }
+    }
+
+    fn unique_path(label: &str) -> PathBuf {
+        let mut root = std::env::temp_dir();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time")
+            .as_nanos();
+        root.push(format!(
+            "easygit-test-{label}-{nanos}-{}",
+            std::process::id()
+        ));
+        root
+    }
+
     struct TestRepo {
         root: PathBuf,
     }
@@ -783,6 +990,13 @@ mod tests {
                 .map_err(|err| format!("Failed to create file {name}: {err}"))?;
             file.write_all(contents.as_bytes())
                 .map_err(|err| format!("Failed to write file {name}: {err}"))
+        }
+
+        fn add_remote(&self, name: &str, path: &Path) -> Result<(), String> {
+            let remote = path
+                .to_str()
+                .ok_or_else(|| "Remote path is not valid UTF-8".to_string())?;
+            self.git(&["remote", "add", name, remote])
         }
 
         fn path(&self) -> &Path {
