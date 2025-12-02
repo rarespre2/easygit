@@ -9,9 +9,9 @@ use ratatui::{
 };
 use std::io;
 
-use crate::git::BranchInfo;
+use crate::git::{BranchInfo, RepoStatus};
 use crate::regions::Region;
-use crate::ui::{branches, commits, details, stashes};
+use crate::ui::{branches, commits, details, stashes, status};
 
 mod git;
 mod regions;
@@ -29,7 +29,10 @@ pub struct App {
     selected_region: Region,
     exit: bool,
     selected_branch: BranchInfo,
+    commits: commits::CommitsState,
+    hovered_commit_id: Option<String>,
     branch_input: Option<BranchInput>,
+    repo_status: RepoStatus,
 }
 
 impl Default for App {
@@ -38,9 +41,13 @@ impl Default for App {
             selected_region: Region::default(),
             exit: false,
             selected_branch: BranchInfo::default(),
+            commits: commits::CommitsState::default(),
+            hovered_commit_id: None,
             branch_input: None,
+            repo_status: RepoStatus::default(),
         };
         app.refresh_branches();
+        app.refresh_status();
         app
     }
 }
@@ -125,6 +132,7 @@ impl BranchInput {
 impl App {
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> io::Result<()> {
         while !self.exit {
+            self.refresh_status();
             terminal.draw(|frame| self.draw(frame))?;
             self.handle_events()?;
         }
@@ -156,7 +164,10 @@ impl App {
             KeyCode::Char('c') => self.select_region(Region::Commits),
             KeyCode::Char('d') => self.select_region(Region::Details),
             KeyCode::Char('s') => self.select_region(Region::Stashes),
-            code => self.handle_branch_region_keys(code),
+            code => {
+                self.handle_branch_region_keys(code);
+                self.handle_commits_region_keys(code);
+            }
         }
     }
 
@@ -171,6 +182,16 @@ impl App {
     fn refresh_branches(&mut self) {
         let previous = std::mem::take(&mut self.selected_branch);
         self.selected_branch = branches::refresh(previous);
+        self.refresh_commits();
+    }
+
+    fn refresh_commits(&mut self) {
+        self.commits = commits::CommitsState::refresh(self.hovered_commit_id.as_deref());
+        self.hovered_commit_id = self.commits.hovered_commit_id().map(|id| id.to_string());
+    }
+
+    fn refresh_status(&mut self) {
+        self.repo_status = git::fetch_repo_status();
     }
 
     fn start_branch_input(&mut self) {
@@ -200,6 +221,22 @@ impl App {
             }
             _ => {}
         }
+
+        self.refresh_commits();
+    }
+
+    fn handle_commits_region_keys(&mut self, code: KeyCode) {
+        if self.selected_region != Region::Commits {
+            return;
+        }
+
+        match code {
+            KeyCode::Up => self.commits.move_hover_up(),
+            KeyCode::Down => self.commits.move_hover_down(),
+            _ => {}
+        }
+
+        self.hovered_commit_id = self.commits.hovered_commit_id().map(|id| id.to_string());
     }
 
     fn submit_branch_input(&mut self) {
@@ -230,10 +267,16 @@ impl App {
 
 impl Widget for &App {
     fn render(self, area: Rect, buf: &mut Buffer) {
+        let layout = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints(vec![Constraint::Percentage(10), Constraint::Percentage(90)])
+            .split(area);
+        status::StatusBox::new(&self.repo_status).render(layout[0], buf);
+
         let outer_layout = Layout::default()
             .direction(Direction::Horizontal)
             .constraints(vec![Constraint::Percentage(30), Constraint::Percentage(70)])
-            .split(area);
+            .split(layout[1]);
 
         let left_layout = Layout::default()
             .direction(Direction::Vertical)
@@ -251,7 +294,11 @@ impl Widget for &App {
         )
         .render(left_layout[0], buf);
         stashes::panel(self.selected_region == Region::Stashes).render(left_layout[1], buf);
-        commits::panel(self.selected_region == Region::Commits).render(right_layout[0], buf);
+        commits::panel_with_child(
+            self.selected_region == Region::Commits,
+            commits::CommitList::new(&self.commits),
+        )
+        .render(right_layout[0], buf);
         details::panel(self.selected_region == Region::Details).render(right_layout[1], buf);
 
         if let Some(input) = &self.branch_input {
