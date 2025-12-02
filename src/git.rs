@@ -172,11 +172,17 @@ pub fn pull_current_branch_in(path: impl AsRef<Path>) -> Result<(), String> {
         .ok_or_else(|| "Failed to read current branch name".to_string())?;
 
     let upstream = upstream_for_branch(path, &branch);
+    let remote = upstream
+        .as_deref()
+        .and_then(upstream_remote)
+        .map(str::to_string)
+        .or_else(|| remote_for_branch(path, &branch))
+        .or_else(|| first_remote(path))
+        .ok_or_else(|| "No remote configured for current branch".to_string())?;
+
+    git_fetch(path, &remote)?;
+
     if upstream.is_none() {
-        let remote = remote_for_branch(path, &branch)
-            .or_else(|| first_remote(path))
-            .ok_or_else(|| "No remote configured for current branch".to_string())?;
-        git_fetch(path, &remote)?;
         set_branch_upstream(path, &branch, &branch_remote_target(path, &branch, &remote))?;
     }
 
@@ -549,7 +555,7 @@ fn format_git_error(label: &str, output: &std::process::Output) -> String {
     if trimmed.is_empty() {
         format!("{label} exited with status: {}", output.status)
     } else {
-        trimmed.to_string()
+        clean_git_message(trimmed)
     }
 }
 
@@ -601,6 +607,19 @@ fn branch_remote_target(path: &Path, branch: &str, remote: &str) -> String {
     } else {
         format!("{remote}/{branch}")
     }
+}
+
+fn upstream_remote(upstream: &str) -> Option<&str> {
+    upstream.split_once('/').map(|(remote, _)| remote)
+}
+
+fn clean_git_message(message: &str) -> String {
+    let first_line = message.lines().next().unwrap_or(message).trim();
+    first_line
+        .trim_start_matches("fatal: ")
+        .trim_start_matches("error: ")
+        .trim()
+        .to_string()
 }
 
 fn try_fetch_branch_info(path: impl AsRef<Path>) -> Result<BranchInfo, String> {
