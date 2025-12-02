@@ -3,3 +3,4 @@ pub mod commits;
 pub mod details;
 pub mod panel;
 pub mod stashes;
+pub mod status;

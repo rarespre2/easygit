@@ -16,6 +16,41 @@ pub struct BranchInfo {
     pub selected: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChangeType {
+    Added,
+    Modified,
+    Deleted,
+    Renamed,
+    Copied,
+    TypeChange,
+    Untracked,
+    Unmerged,
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileChange {
+    pub path: String,
+    pub change: ChangeType,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct RepoStatus {
+    pub changes: Vec<FileChange>,
+    pub error: Option<String>,
+}
+
+impl RepoStatus {
+    pub fn total_changes(&self) -> usize {
+        self.changes.len()
+    }
+
+    pub fn is_clean(&self) -> bool {
+        self.error.is_none() && self.changes.is_empty()
+    }
+}
+
 pub fn fetch_branch_info() -> BranchInfo {
     fetch_branch_info_in(".")
 }
@@ -184,6 +219,91 @@ pub fn fetch_commits_in(path: impl AsRef<Path>) -> Result<Vec<Commit>, String> {
     }
 
     Ok(commits)
+}
+
+pub fn fetch_repo_status() -> RepoStatus {
+    fetch_repo_status_in(".")
+}
+
+pub fn fetch_repo_status_in(path: impl AsRef<Path>) -> RepoStatus {
+    match try_fetch_repo_status(path) {
+        Ok(changes) => RepoStatus {
+            changes,
+            error: None,
+        },
+        Err(err) => RepoStatus {
+            changes: Vec::new(),
+            error: Some(err),
+        },
+    }
+}
+
+fn try_fetch_repo_status(path: impl AsRef<Path>) -> Result<Vec<FileChange>, String> {
+    let output = std::process::Command::new("git")
+        .arg("status")
+        .arg("--porcelain=v1")
+        .arg("--untracked-files=all")
+        .current_dir(path.as_ref())
+        .output()
+        .map_err(|err| format!("Failed to run git status: {err}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let trimmed = stderr.trim();
+        return Err(if trimmed.is_empty() {
+            format!("git status exited with status: {}", output.status)
+        } else {
+            trimmed.to_string()
+        });
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let changes = stdout
+        .lines()
+        .filter_map(parse_status_line)
+        .collect::<Vec<_>>();
+    Ok(changes)
+}
+
+fn parse_status_line(line: &str) -> Option<FileChange> {
+    if line.len() < 3 {
+        return None;
+    }
+    let code = &line[0..2];
+    let mut path = line[3..].trim();
+    if path.is_empty() {
+        return None;
+    }
+    if let Some((_, new)) = path.split_once(" -> ") {
+        path = new.trim();
+    }
+    Some(FileChange {
+        path: path.to_string(),
+        change: change_type_from_code(code),
+    })
+}
+
+fn change_type_from_code(code: &str) -> ChangeType {
+    if code == "??" {
+        return ChangeType::Untracked;
+    }
+
+    let mut chars = code.chars();
+    let x = chars.next().unwrap_or(' ');
+    let y = chars.next().unwrap_or(' ');
+
+    let flag = if x != ' ' { x } else { y };
+    match flag {
+        'A' => ChangeType::Added,
+        'M' => ChangeType::Modified,
+        'D' => ChangeType::Deleted,
+        'R' => ChangeType::Renamed,
+        'C' => ChangeType::Copied,
+        'T' => ChangeType::TypeChange,
+        'U' => ChangeType::Unmerged,
+        '?' => ChangeType::Untracked,
+        _ => ChangeType::Unknown,
+    }
 }
 
 fn find_main_branch_in(path: impl AsRef<Path>) -> Option<String> {
@@ -419,6 +539,64 @@ mod tests {
                 .iter()
                 .any(|c| c.summary == "base" && c.branches == vec!["main".to_string()])
         );
+    }
+
+    #[test]
+    fn parses_porcelain_lines_into_changes() {
+        let modified = parse_status_line(" M src/main.rs").unwrap();
+        assert_eq!(
+            modified,
+            FileChange {
+                path: "src/main.rs".to_string(),
+                change: ChangeType::Modified
+            }
+        );
+
+        let renamed = parse_status_line("R  old.rs -> new.rs").unwrap();
+        assert_eq!(
+            renamed,
+            FileChange {
+                path: "new.rs".to_string(),
+                change: ChangeType::Renamed
+            }
+        );
+
+        let untracked = parse_status_line("?? notes.txt").unwrap();
+        assert_eq!(
+            untracked,
+            FileChange {
+                path: "notes.txt".to_string(),
+                change: ChangeType::Untracked
+            }
+        );
+    }
+
+    #[test]
+    fn fetch_repo_status_lists_local_changes() {
+        let repo = TestRepo::init().unwrap();
+        repo.write_file("file.txt", "content").unwrap();
+        repo.git(&["add", "."]).unwrap();
+        repo.git(&["commit", "-m", "init"]).unwrap();
+
+        repo.write_file("file.txt", "updated").unwrap();
+        repo.write_file("new.txt", "new file").unwrap();
+
+        let status = fetch_repo_status_in(repo.path());
+
+        assert_eq!(status.total_changes(), 2);
+        assert!(
+            status
+                .changes
+                .iter()
+                .any(|change| change.path == "file.txt" && change.change == ChangeType::Modified)
+        );
+        assert!(
+            status
+                .changes
+                .iter()
+                .any(|change| change.path == "new.txt" && change.change == ChangeType::Untracked)
+        );
+        assert!(status.error.is_none());
     }
 
     struct TestRepo {
