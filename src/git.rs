@@ -177,7 +177,7 @@ pub fn pull_current_branch_in(path: impl AsRef<Path>) -> Result<(), String> {
             .or_else(|| first_remote(path))
             .ok_or_else(|| "No remote configured for current branch".to_string())?;
         git_fetch(path, &remote)?;
-        set_branch_upstream(path, &branch, &remote, &branch)?;
+        set_branch_upstream(path, &branch, &branch_remote_target(path, &branch, &remote))?;
     }
 
     git_pull_ff_only(path)
@@ -586,22 +586,21 @@ fn git_config_value(path: &Path, key: &str) -> Option<String> {
     Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-fn set_branch_upstream(
-    path: &Path,
-    branch: &str,
-    remote: &str,
-    remote_branch: &str,
-) -> Result<(), String> {
+fn set_branch_upstream(path: &Path, branch: &str, remote_ref: &str) -> Result<(), String> {
     run_git_command(
         path,
-        [
-            "branch",
-            "--set-upstream-to",
-            &format!("{remote}/{remote_branch}"),
-            branch,
-        ],
+        ["branch", "--set-upstream-to", remote_ref, branch],
         "git branch --set-upstream-to",
     )
+}
+
+fn branch_remote_target(path: &Path, branch: &str, remote: &str) -> String {
+    if let Some(remote_branch) = git_config_value(path, &format!("branch.{branch}.merge")) {
+        let trimmed = remote_branch.trim_start_matches("refs/heads/");
+        format!("{remote}/{trimmed}")
+    } else {
+        format!("{remote}/{branch}")
+    }
 }
 
 fn try_fetch_branch_info(path: impl AsRef<Path>) -> Result<BranchInfo, String> {

@@ -26,15 +26,27 @@ pub fn panel_with_child<W: Widget>(selected: bool, child: W) -> BranchesPanel<W>
     PanelBlock::with_child(Region::Branches, selected, child).with_footer(footer)
 }
 
-pub fn handle_key(info: &mut BranchInfo, key: KeyCode) {
+pub fn handle_key(info: &mut BranchInfo, key: KeyCode) -> Option<String> {
     match key {
-        KeyCode::Up => move_hover_up(info),
-        KeyCode::Down => move_hover_down(info),
-        KeyCode::Enter => checkout_hovered(info),
-        KeyCode::Char('x') | KeyCode::Delete => delete_hovered(info),
+        KeyCode::Up => {
+            move_hover_up(info);
+            None
+        }
+        KeyCode::Down => {
+            move_hover_down(info);
+            None
+        }
+        KeyCode::Enter => {
+            checkout_hovered(info);
+            None
+        }
+        KeyCode::Char('x') | KeyCode::Delete => {
+            delete_hovered(info);
+            None
+        }
         KeyCode::Char('u') => pull_current_branch(info),
         KeyCode::Char('p') => push_current_branch(info),
-        _ => {}
+        _ => None,
     }
 }
 
@@ -121,34 +133,45 @@ fn delete_hovered(info: &mut BranchInfo) {
     }
 }
 
-fn pull_current_branch(info: &mut BranchInfo) {
+fn pull_current_branch(info: &mut BranchInfo) -> Option<String> {
     let Some(current) = info.current.clone() else {
         info.status = Some("No current branch to pull".to_string());
-        return;
+        return Some("No current branch to pull".to_string());
     };
 
     match git::pull_current_branch() {
         Ok(()) => refresh_after_remote_action(info),
-        Err(err) => info.status = Some(format!("Pull {current} failed: {err}")),
+        Err(err) => {
+            let message = format!("Pull {current} failed: {err}");
+            info.status = Some(message.clone());
+            Some(message)
+        }
     }
 }
 
-fn push_current_branch(info: &mut BranchInfo) {
+fn push_current_branch(info: &mut BranchInfo) -> Option<String> {
     let Some(current) = info.current.clone() else {
         info.status = Some("No current branch to push".to_string());
-        return;
+        return Some("No current branch to push".to_string());
     };
 
     match git::push_current_branch() {
         Ok(()) => refresh_after_remote_action(info),
-        Err(err) => info.status = Some(format!("Push {current} failed: {err}")),
+        Err(err) => {
+            let message = format!("Push {current} failed: {err}");
+            info.status = Some(message.clone());
+            Some(message)
+        }
     }
 }
 
-fn refresh_after_remote_action(info: &mut BranchInfo) {
+fn refresh_after_remote_action(info: &mut BranchInfo) -> Option<String> {
     let mut previous = mem::take(info);
     previous.status = None;
     *info = refresh(previous);
+    info.current
+        .as_ref()
+        .map(|branch| format!("Updated {}", branch))
 }
 
 fn preferred_hover_index(info: &BranchInfo, previous: Option<usize>) -> Option<usize> {
