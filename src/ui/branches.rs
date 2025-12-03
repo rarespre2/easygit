@@ -16,10 +16,6 @@ use super::panel::PanelBlock;
 
 pub type BranchesPanel<W = super::panel::Empty> = PanelBlock<W>;
 
-pub fn panel(selected: bool) -> BranchesPanel {
-    PanelBlock::new(Region::Branches, selected)
-}
-
 pub fn panel_with_child<W: Widget>(selected: bool, child: W) -> BranchesPanel<W> {
     let footer = Line::from("[u] Update   [p] Push")
         .style(Style::default().fg(Region::Branches.color(selected)));
@@ -75,15 +71,6 @@ fn move_hover_down(info: &mut BranchInfo) {
         }
     } else if !info.branches.is_empty() {
         info.hovered = Some(0);
-    }
-}
-
-fn select_hovered(info: &mut BranchInfo) {
-    if let Some(index) = info.hovered {
-        if let Some(name) = info.branches.get(index) {
-            info.current = Some(name.name.clone());
-            info.selected = Some(name.name.clone());
-        }
     }
 }
 
