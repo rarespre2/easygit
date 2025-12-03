@@ -205,7 +205,6 @@ impl Widget for &App {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
