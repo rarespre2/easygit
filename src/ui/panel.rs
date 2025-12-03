@@ -3,6 +3,7 @@ use ratatui::{
     layout::Rect,
     style::Style,
     symbols::border,
+    text::Line,
     widgets::{Block, Widget},
 };
 
@@ -18,6 +19,7 @@ pub struct PanelBlock<W = Empty> {
     region: Region,
     selected: bool,
     child: W,
+    footer: Option<Line<'static>>,
 }
 
 impl PanelBlock<Empty> {
@@ -26,6 +28,7 @@ impl PanelBlock<Empty> {
             region,
             selected,
             child: Empty,
+            footer: None,
         }
     }
 }
@@ -36,16 +39,25 @@ impl<W: Widget> PanelBlock<W> {
             region,
             selected,
             child,
+            footer: None,
         }
+    }
+
+    pub fn with_footer(mut self, footer: Line<'static>) -> Self {
+        self.footer = Some(footer);
+        self
     }
 }
 
 impl<W: Widget> Widget for PanelBlock<W> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let block = Block::bordered()
+        let mut block = Block::bordered()
             .title(self.region.as_str())
             .style(Style::default().fg(self.region.color(self.selected)))
             .border_set(border::THICK);
+        if let Some(footer) = &self.footer {
+            block = block.title_bottom(footer.clone());
+        }
         let inner = block.inner(area);
         block.render(area, buf);
         self.child.render(inner, buf);

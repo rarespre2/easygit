@@ -2,12 +2,15 @@ use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
 use ratatui::{
     DefaultTerminal, Frame,
     buffer::Buffer,
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph, Widget},
 };
-use std::io;
+use std::{
+    io,
+    time::{Duration, Instant},
+};
 
 use crate::git::{BranchInfo, RepoStatus};
 use crate::regions::Region;
@@ -33,6 +36,9 @@ pub struct App {
     hovered_commit_id: Option<String>,
     branch_input: Option<BranchInput>,
     repo_status: RepoStatus,
+    last_refresh: Instant,
+    refresh_interval: Duration,
+    notification: Option<Notification>,
 }
 
 impl Default for App {
@@ -45,9 +51,11 @@ impl Default for App {
             hovered_commit_id: None,
             branch_input: None,
             repo_status: RepoStatus::default(),
+            last_refresh: Instant::now(),
+            refresh_interval: Duration::from_millis(1000),
+            notification: None,
         };
-        app.refresh_branches();
-        app.refresh_status();
+        app.refresh_all();
         app
     }
 }
@@ -132,7 +140,7 @@ impl BranchInput {
 impl App {
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> io::Result<()> {
         while !self.exit {
-            self.refresh_status();
+            self.refresh_if_due();
             terminal.draw(|frame| self.draw(frame))?;
             self.handle_events()?;
         }
@@ -143,9 +151,27 @@ impl App {
         frame.render_widget(self, frame.area());
     }
 
+    fn refresh_if_due(&mut self) {
+        self.clear_expired_notification();
+        if self.last_refresh.elapsed() >= self.refresh_interval {
+            self.refresh_all();
+            self.last_refresh = Instant::now();
+        }
+    }
+
+    fn refresh_all(&mut self) {
+        self.refresh_branches();
+        self.refresh_status();
+        self.last_refresh = Instant::now();
+    }
+
     fn handle_events(&mut self) -> io::Result<()> {
+        if !event::poll(self.refresh_interval)? {
+            return Ok(());
+        }
+
         if let Event::Key(key_event) = event::read()? {
-            if key_event.kind == KeyEventKind::Press {
+            if should_handle_key(&key_event) {
                 self.handle_key_event(key_event);
             }
         }
@@ -194,6 +220,21 @@ impl App {
         self.repo_status = git::fetch_repo_status();
     }
 
+    fn show_notification(&mut self, message: String) {
+        self.notification = Some(Notification {
+            message,
+            expires_at: Instant::now() + Duration::from_secs(10),
+        });
+    }
+
+    fn clear_expired_notification(&mut self) {
+        if let Some(notification) = &self.notification {
+            if Instant::now() >= notification.expires_at {
+                self.notification = None;
+            }
+        }
+    }
+
     fn start_branch_input(&mut self) {
         self.branch_input = Some(BranchInput::default());
     }
@@ -214,12 +255,21 @@ impl App {
             return;
         }
 
-        match code {
-            KeyCode::Char('a') => self.start_branch_input(),
-            KeyCode::Up | KeyCode::Down | KeyCode::Enter | KeyCode::Delete | KeyCode::Char('x') => {
-                branches::handle_key(&mut self.selected_branch, code);
+        if let Some(message) = match code {
+            KeyCode::Char('a') => {
+                self.start_branch_input();
+                None
             }
-            _ => {}
+            KeyCode::Up
+            | KeyCode::Down
+            | KeyCode::Enter
+            | KeyCode::Delete
+            | KeyCode::Char('x')
+            | KeyCode::Char('u')
+            | KeyCode::Char('p') => branches::handle_key(&mut self.selected_branch, code),
+            _ => None,
+        } {
+            self.show_notification(message);
         }
 
         self.refresh_commits();
@@ -265,6 +315,13 @@ impl App {
     }
 }
 
+fn should_handle_key(key_event: &KeyEvent) -> bool {
+    matches!(
+        key_event.kind,
+        KeyEventKind::Press | KeyEventKind::Repeat
+    )
+}
+
 impl Widget for &App {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let layout = Layout::default()
@@ -303,6 +360,10 @@ impl Widget for &App {
 
         if let Some(input) = &self.branch_input {
             render_branch_popup(area, buf, input);
+        }
+
+        if let Some(notification) = &self.notification {
+            render_notification(area, buf, notification);
         }
     }
 }
@@ -379,4 +440,54 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
             Constraint::Percentage((100 - percent_x) / 2),
         ])
         .split(vertical[1])[1]
+}
+
+#[derive(Debug)]
+struct Notification {
+    message: String,
+    expires_at: Instant,
+}
+
+fn render_notification(area: Rect, buf: &mut Buffer, notification: &Notification) {
+    if area.width < 10 || area.height < 3 {
+        return;
+    }
+
+    let message_width = notification.message.chars().count().saturating_add(4);
+    let width = message_width.min(area.width as usize) as u16;
+    let height = 3;
+    let x = area.x + area.width.saturating_sub(width);
+    let y = area.y + area.height.saturating_sub(height);
+    let popup_area = Rect::new(x, y, width, height);
+
+    Clear.render(popup_area, buf);
+    Paragraph::new(notification.message.clone())
+        .alignment(Alignment::Center)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Notice")
+                .style(Style::default().fg(Color::Yellow)),
+        )
+        .render(popup_area, buf);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+
+    #[test]
+    fn should_handle_press_and_repeat_keys() {
+        let press = KeyEvent::new(KeyCode::Up, KeyModifiers::NONE);
+        assert!(should_handle_key(&press));
+
+        let repeat =
+            KeyEvent::new_with_kind(KeyCode::Up, KeyModifiers::NONE, KeyEventKind::Repeat);
+        assert!(should_handle_key(&repeat));
+
+        let release =
+            KeyEvent::new_with_kind(KeyCode::Up, KeyModifiers::NONE, KeyEventKind::Release);
+        assert!(!should_handle_key(&release));
+    }
 }

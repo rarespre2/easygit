@@ -1,12 +1,15 @@
+use std::mem;
+
 use crossterm::event::KeyCode;
 use ratatui::{
     buffer::Buffer,
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::Rect,
     style::{Color, Modifier, Style},
+    text::{Line, Span},
     widgets::{List, ListItem, Paragraph, Widget},
 };
 
-use crate::git::{self, BranchInfo};
+use crate::git::{self, BranchInfo, BranchSummary};
 use crate::regions::Region;
 
 use super::panel::PanelBlock;
@@ -18,25 +21,38 @@ pub fn panel(selected: bool) -> BranchesPanel {
 }
 
 pub fn panel_with_child<W: Widget>(selected: bool, child: W) -> BranchesPanel<W> {
-    PanelBlock::with_child(Region::Branches, selected, child)
+    let footer = Line::from("[u] Update   [p] Push")
+        .style(Style::default().fg(Region::Branches.color(selected)));
+    PanelBlock::with_child(Region::Branches, selected, child).with_footer(footer)
 }
 
-pub fn handle_key(info: &mut BranchInfo, key: KeyCode) {
+pub fn handle_key(info: &mut BranchInfo, key: KeyCode) -> Option<String> {
     match key {
-        KeyCode::Up => move_hover_up(info),
-        KeyCode::Down => move_hover_down(info),
+        KeyCode::Up => {
+            move_hover_up(info);
+            None
+        }
+        KeyCode::Down => {
+            move_hover_down(info);
+            None
+        }
         KeyCode::Enter => checkout_hovered(info),
         KeyCode::Char('x') | KeyCode::Delete => delete_hovered(info),
-        _ => {}
+        KeyCode::Char('u') => pull_current_branch(info),
+        KeyCode::Char('p') => push_current_branch(info),
+        _ => None,
     }
 }
 
 pub fn refresh(prev: BranchInfo) -> BranchInfo {
     let mut current = git::fetch_branch_info();
     current.hovered = preferred_hover_index(&current, prev.hovered);
-    current.selected = prev
-        .selected
-        .filter(|selected| current.branches.iter().any(|name| name == selected));
+    current.selected = prev.selected.filter(|selected| {
+        current
+            .branches
+            .iter()
+            .any(|branch| &branch.name == selected)
+    });
     current
 }
 
@@ -65,50 +81,95 @@ fn move_hover_down(info: &mut BranchInfo) {
 fn select_hovered(info: &mut BranchInfo) {
     if let Some(index) = info.hovered {
         if let Some(name) = info.branches.get(index) {
-            info.current = Some(name.clone());
-            info.selected = Some(name.clone());
+            info.current = Some(name.name.clone());
+            info.selected = Some(name.name.clone());
         }
     }
 }
 
-fn checkout_hovered(info: &mut BranchInfo) {
+fn checkout_hovered(info: &mut BranchInfo) -> Option<String> {
     if let Some(index) = info.hovered {
-        if let Some(name) = info.branches.get(index).cloned() {
-            match git::checkout_branch(&name) {
+        if let Some(branch) = info.branches.get(index).cloned() {
+            match git::checkout_branch(&branch.name) {
                 Ok(()) => {
                     let previous = std::mem::take(info);
                     let mut refreshed = refresh(previous);
-                    refreshed.selected = Some(name.clone());
-                    refreshed.current = Some(name);
+                    refreshed.selected = Some(branch.name.clone());
+                    refreshed.current = Some(branch.name);
                     *info = refreshed;
+                    return info
+                        .current
+                        .as_ref()
+                        .map(|name| format!("Switched to {name}"));
                 }
                 Err(err) => {
-                    info.status = Some(format!("Checkout failed: {err}"));
+                    return Some(format!("Checkout failed: {err}"));
                 }
             }
+        }
+    }
+
+    None
+}
+
+fn delete_hovered(info: &mut BranchInfo) -> Option<String> {
+    if let Some(index) = info.hovered {
+        if let Some(branch) = info.branches.get(index).cloned() {
+            if info.current.as_deref() == Some(branch.name.as_str()) {
+                return Some("Cannot delete the current branch".to_string());
+            }
+
+            match git::delete_branch(&branch.name) {
+                Ok(()) => {
+                    let previous = std::mem::take(info);
+                    *info = refresh(previous);
+                    return Some(format!("Deleted {}", branch.name));
+                }
+                Err(err) => {
+                    return Some(format!("Delete failed: {err}"));
+                }
+            }
+        }
+    }
+
+    None
+}
+
+fn pull_current_branch(info: &mut BranchInfo) -> Option<String> {
+    let Some(current) = info.current.clone() else {
+        return Some("No current branch to update".to_string());
+    };
+
+    match git::pull_current_branch() {
+        Ok(()) => refresh_after_remote_action(info),
+        Err(err) => {
+            let message = format!("Update {current} failed: {err}");
+            Some(message)
         }
     }
 }
 
-fn delete_hovered(info: &mut BranchInfo) {
-    if let Some(index) = info.hovered {
-        if let Some(name) = info.branches.get(index).cloned() {
-            if info.current.as_deref() == Some(name.as_str()) {
-                info.status = Some("Cannot delete the current branch".to_string());
-                return;
-            }
+fn push_current_branch(info: &mut BranchInfo) -> Option<String> {
+    let Some(current) = info.current.clone() else {
+        return Some("No current branch to push".to_string());
+    };
 
-            match git::delete_branch(&name) {
-                Ok(()) => {
-                    let previous = std::mem::take(info);
-                    *info = refresh(previous);
-                }
-                Err(err) => {
-                    info.status = Some(format!("Delete failed: {err}"));
-                }
-            }
+    match git::push_current_branch() {
+        Ok(()) => refresh_after_remote_action(info),
+        Err(err) => {
+            let message = format!("Push {current} failed: {err}");
+            Some(message)
         }
     }
+}
+
+fn refresh_after_remote_action(info: &mut BranchInfo) -> Option<String> {
+    let mut previous = mem::take(info);
+    previous.status = None;
+    *info = refresh(previous);
+    info.current
+        .as_ref()
+        .map(|branch| format!("Updated {}", branch))
 }
 
 fn preferred_hover_index(info: &BranchInfo, previous: Option<usize>) -> Option<usize> {
@@ -116,23 +177,26 @@ fn preferred_hover_index(info: &BranchInfo, previous: Option<usize>) -> Option<u
         return None;
     }
 
+    if let Some(previous) = previous {
+        return Some(previous.min(info.branches.len().saturating_sub(1)));
+    }
+
     if let Some(current_name) = &info.current {
-        if let Some(index) = info.branches.iter().position(|name| name == current_name) {
+        if let Some(index) = info
+            .branches
+            .iter()
+            .position(|branch| &branch.name == current_name)
+        {
             return Some(index);
         }
     }
 
-    Some(
-        previous
-            .unwrap_or(0)
-            .min(info.branches.len().saturating_sub(1)),
-    )
+    Some(0)
 }
 
 pub struct BranchList<'a> {
-    branches: &'a [String],
+    branches: &'a [BranchSummary],
     current: Option<&'a str>,
-    status: Option<&'a str>,
     hovered: Option<usize>,
     selected: Option<&'a str>,
 }
@@ -142,7 +206,6 @@ impl<'a> BranchList<'a> {
         Self {
             branches: &info.branches,
             current: info.current.as_deref(),
-            status: info.status.as_deref(),
             hovered: info.hovered,
             selected: info.selected.as_deref(),
         }
@@ -152,47 +215,44 @@ impl<'a> BranchList<'a> {
 impl Widget for BranchList<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         if self.branches.is_empty() {
-            if let Some(status) = self.status {
-                Paragraph::new(status)
-                    .style(Style::default().fg(Color::Red))
-                    .render(area, buf);
-            } else {
-                Paragraph::new("No branches found").render(area, buf);
-            }
+            Paragraph::new("No branches found").render(area, buf);
             return;
         }
-
-        let list_area = if let Some(status) = self.status {
-            let chunks = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints(vec![Constraint::Length(1), Constraint::Min(0)])
-                .split(area);
-            Paragraph::new(status)
-                .style(Style::default().fg(Color::Red))
-                .render(chunks[0], buf);
-            chunks[1]
-        } else {
-            area
-        };
 
         let items: Vec<ListItem> = self
             .branches
             .iter()
             .enumerate()
-            .map(|(index, name)| {
-                let is_current = Some(name.as_str()) == self.current;
+            .map(|(index, branch)| {
+                let is_current = Some(branch.name.as_str()) == self.current;
                 let is_hovered = Some(index) == self.hovered;
-                let is_selected = Some(name.as_str()) == self.selected;
+                let is_selected = Some(branch.name.as_str()) == self.selected;
                 let prefix = format!(
                     "{}{}",
                     if is_hovered { ">" } else { " " },
                     if is_current { "*" } else { " " }
                 );
-                let content = if is_current {
-                    format!("{prefix} {name}")
-                } else {
-                    format!("{prefix} {name}")
-                };
+
+                let indicator = format_indicator(branch);
+                let indicator_len = visible_width(&indicator);
+                let width = area.width as usize;
+                let prefix_len = visible_width(&prefix);
+                let available_name = width.saturating_sub(prefix_len + indicator_len + 2).max(0);
+                let display_name = truncate_with_ellipsis(&branch.name, available_name);
+                let name_len = visible_width(&display_name);
+                let padding = " ".repeat(available_name.saturating_sub(name_len));
+
+                let mut spans = vec![
+                    Span::raw(prefix),
+                    Span::raw(" "),
+                    Span::raw(display_name),
+                    Span::raw(padding),
+                ];
+                if indicator_len > 0 && width > prefix_len + 1 {
+                    spans.push(Span::raw(" "));
+                    spans.push(Span::raw(indicator));
+                }
+
                 let style = if is_current {
                     Style::default()
                         .fg(Color::Green)
@@ -207,11 +267,110 @@ impl Widget for BranchList<'_> {
                 } else {
                     Modifier::empty()
                 });
-                ListItem::new(content).style(style)
+                ListItem::new(Line::from(spans)).style(style)
             })
             .collect();
 
-        let list = List::new(items);
-        list.render(list_area, buf);
+        List::new(items).render(area, buf);
+    }
+}
+
+fn visible_width(text: &str) -> usize {
+    text.chars().count()
+}
+
+fn truncate_with_ellipsis(text: &str, max_width: usize) -> String {
+    if max_width == 0 {
+        return String::new();
+    }
+    let text_len = text.chars().count();
+    if text_len <= max_width {
+        return text.to_string();
+    }
+    if max_width == 1 {
+        return "…".to_string();
+    }
+    let mut truncated = String::new();
+    for ch in text.chars().take(max_width - 1) {
+        truncated.push(ch);
+    }
+    truncated.push('…');
+    truncated
+}
+
+fn format_indicator(branch: &BranchSummary) -> String {
+    let ahead = branch.ahead.unwrap_or(0);
+    let behind = branch.behind.unwrap_or(0);
+    format!("↑{ahead} ↓{behind}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_info(names: &[&str], current: Option<&str>) -> BranchInfo {
+        BranchInfo {
+            branches: names
+                .iter()
+                .map(|name| BranchSummary {
+                    name: (*name).to_string(),
+                    ahead: None,
+                    behind: None,
+                })
+                .collect(),
+            current: current.map(str::to_string),
+            status: None,
+            hovered: None,
+            selected: None,
+        }
+    }
+
+    #[test]
+    fn truncates_and_adds_ellipsis() {
+        assert_eq!(
+            truncate_with_ellipsis("feature/some-long-name", 10),
+            "feature/s…"
+        );
+        assert_eq!(truncate_with_ellipsis("short", 10), "short");
+        assert_eq!(truncate_with_ellipsis("long", 1), "…");
+    }
+
+    #[test]
+    fn formats_indicator_for_ahead_behind() {
+        let mut branch = BranchSummary {
+            name: "feature".into(),
+            ahead: Some(2),
+            behind: Some(1),
+        };
+        assert_eq!(format_indicator(&branch), "↑2 ↓1");
+
+        branch.ahead = Some(0);
+        branch.behind = Some(0);
+        assert_eq!(format_indicator(&branch), "↑0 ↓0");
+
+        branch.ahead = None;
+        branch.behind = None;
+        assert_eq!(format_indicator(&branch), "↑0 ↓0");
+    }
+
+    #[test]
+    fn preferred_hover_prefers_previous_selection() {
+        let info = make_info(&["main", "feature"], Some("main"));
+
+        assert_eq!(preferred_hover_index(&info, Some(1)), Some(1));
+    }
+
+    #[test]
+    fn preferred_hover_defaults_to_current_when_no_previous() {
+        let info = make_info(&["main", "feature"], Some("main"));
+
+        assert_eq!(preferred_hover_index(&info, None), Some(0));
+    }
+
+    #[test]
+    fn preferred_hover_clamps_out_of_range_previous() {
+        let info = make_info(&["main", "feature"], Some("main"));
+
+        assert_eq!(preferred_hover_index(&info, Some(10)), Some(1));
     }
 }
