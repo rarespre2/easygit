@@ -177,6 +177,10 @@ fn preferred_hover_index(info: &BranchInfo, previous: Option<usize>) -> Option<u
         return None;
     }
 
+    if let Some(previous) = previous {
+        return Some(previous.min(info.branches.len().saturating_sub(1)));
+    }
+
     if let Some(current_name) = &info.current {
         if let Some(index) = info
             .branches
@@ -187,11 +191,7 @@ fn preferred_hover_index(info: &BranchInfo, previous: Option<usize>) -> Option<u
         }
     }
 
-    Some(
-        previous
-            .unwrap_or(0)
-            .min(info.branches.len().saturating_sub(1)),
-    )
+    Some(0)
 }
 
 pub struct BranchList<'a> {
@@ -308,6 +308,23 @@ fn format_indicator(branch: &BranchSummary) -> String {
 mod tests {
     use super::*;
 
+    fn make_info(names: &[&str], current: Option<&str>) -> BranchInfo {
+        BranchInfo {
+            branches: names
+                .iter()
+                .map(|name| BranchSummary {
+                    name: (*name).to_string(),
+                    ahead: None,
+                    behind: None,
+                })
+                .collect(),
+            current: current.map(str::to_string),
+            status: None,
+            hovered: None,
+            selected: None,
+        }
+    }
+
     #[test]
     fn truncates_and_adds_ellipsis() {
         assert_eq!(
@@ -334,5 +351,26 @@ mod tests {
         branch.ahead = None;
         branch.behind = None;
         assert_eq!(format_indicator(&branch), "↑0 ↓0");
+    }
+
+    #[test]
+    fn preferred_hover_prefers_previous_selection() {
+        let info = make_info(&["main", "feature"], Some("main"));
+
+        assert_eq!(preferred_hover_index(&info, Some(1)), Some(1));
+    }
+
+    #[test]
+    fn preferred_hover_defaults_to_current_when_no_previous() {
+        let info = make_info(&["main", "feature"], Some("main"));
+
+        assert_eq!(preferred_hover_index(&info, None), Some(0));
+    }
+
+    #[test]
+    fn preferred_hover_clamps_out_of_range_previous() {
+        let info = make_info(&["main", "feature"], Some("main"));
+
+        assert_eq!(preferred_hover_index(&info, Some(10)), Some(1));
     }
 }

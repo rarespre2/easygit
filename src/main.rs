@@ -171,7 +171,7 @@ impl App {
         }
 
         if let Event::Key(key_event) = event::read()? {
-            if key_event.kind == KeyEventKind::Press {
+            if should_handle_key(&key_event) {
                 self.handle_key_event(key_event);
             }
         }
@@ -313,6 +313,13 @@ impl App {
             }
         }
     }
+}
+
+fn should_handle_key(key_event: &KeyEvent) -> bool {
+    matches!(
+        key_event.kind,
+        KeyEventKind::Press | KeyEventKind::Repeat
+    )
 }
 
 impl Widget for &App {
@@ -463,4 +470,24 @@ fn render_notification(area: Rect, buf: &mut Buffer, notification: &Notification
                 .style(Style::default().fg(Color::Yellow)),
         )
         .render(popup_area, buf);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+
+    #[test]
+    fn should_handle_press_and_repeat_keys() {
+        let press = KeyEvent::new(KeyCode::Up, KeyModifiers::NONE);
+        assert!(should_handle_key(&press));
+
+        let repeat =
+            KeyEvent::new_with_kind(KeyCode::Up, KeyModifiers::NONE, KeyEventKind::Repeat);
+        assert!(should_handle_key(&repeat));
+
+        let release =
+            KeyEvent::new_with_kind(KeyCode::Up, KeyModifiers::NONE, KeyEventKind::Release);
+        assert!(!should_handle_key(&release));
+    }
 }
