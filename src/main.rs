@@ -13,7 +13,7 @@ use std::{
 
 use crate::git::{BranchInfo, RepoStatus};
 use crate::regions::Region;
-use crate::ui::{branches, commits, details, stashes, status};
+use crate::ui::{branches, commits, details, popup, stashes, status};
 use notification::{render_notification, Notification};
 
 mod app;
@@ -42,6 +42,8 @@ pub struct App {
     last_refresh: Instant,
     refresh_interval: Duration,
     notification: Option<Notification>,
+    show_changes_popup: bool,
+    popup_region: Region,
 }
 
 impl Default for App {
@@ -57,6 +59,8 @@ impl Default for App {
             last_refresh: Instant::now(),
             refresh_interval: Duration::from_millis(1000),
             notification: None,
+            show_changes_popup: false,
+            popup_region: Region::Changes,
         };
         app.refresh_all();
         app
@@ -110,12 +114,21 @@ impl App {
             return;
         }
 
+        if self.show_changes_popup {
+            self.handle_popup_keys(key_event.code);
+            return;
+        }
+
         match key_event.code {
             KeyCode::Char('q') => self.exit(),
             KeyCode::Char('b') => self.select_region(Region::Branches),
             KeyCode::Char('c') => self.select_region(Region::Commits),
             KeyCode::Char('d') => self.select_region(Region::Details),
             KeyCode::Char('s') => self.select_region(Region::Stashes),
+            KeyCode::Char('l') => {
+                self.show_changes_popup = true;
+                self.popup_region = Region::Changes;
+            }
             code => {
                 self.handle_branch_region_keys(code);
                 self.handle_commits_region_keys(code);
@@ -165,7 +178,7 @@ impl Widget for &App {
             .direction(Direction::Vertical)
             .constraints(vec![Constraint::Percentage(10), Constraint::Percentage(90)])
             .split(area);
-        status::StatusBox::new(&self.repo_status).render(layout[0], buf);
+        status::StatusBox::new(&self.repo_status, self.selected_region).render(layout[0], buf);
 
         let outer_layout = Layout::default()
             .direction(Direction::Horizontal)
@@ -201,6 +214,22 @@ impl Widget for &App {
 
         if let Some(notification) = &self.notification {
             render_notification(area, buf, notification);
+        }
+
+        if self.show_changes_popup {
+            popup::CompartmentPopup::render(area, buf, self.popup_region);
+        }
+    }
+}
+
+impl App {
+    fn handle_popup_keys(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Char('q') | KeyCode::Esc => self.show_changes_popup = false,
+            KeyCode::Char('c') => self.popup_region = Region::Changes,
+            KeyCode::Char('v') => self.popup_region = Region::ChangeViewer,
+            KeyCode::Char('m') => self.popup_region = Region::CommitMessage,
+            _ => {}
         }
     }
 }

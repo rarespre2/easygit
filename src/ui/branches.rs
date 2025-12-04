@@ -17,9 +17,7 @@ use super::panel::PanelBlock;
 pub type BranchesPanel<W = super::panel::Empty> = PanelBlock<W>;
 
 pub fn panel_with_child<W: Widget>(selected: bool, child: W) -> BranchesPanel<W> {
-    let footer = Line::from("[u] Update   [p] Push")
-        .style(Style::default().fg(Region::Branches.color(selected)));
-    PanelBlock::with_child(Region::Branches, selected, child).with_footer(footer)
+    PanelBlock::with_child(Region::Branches, selected, child)
 }
 
 pub fn handle_key(info: &mut BranchInfo, key: KeyCode) -> Option<String> {

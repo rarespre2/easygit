@@ -7,6 +7,9 @@ pub enum Region {
     Details,
     Branches,
     Stashes,
+    Changes,
+    ChangeViewer,
+    CommitMessage,
 }
 
 impl Region {
@@ -16,6 +19,9 @@ impl Region {
             Region::Branches => "[b] Branches",
             Region::Details => "[d] Details",
             Region::Stashes => "[s] Stashes",
+            Region::Changes => "[c] Changes",
+            Region::ChangeViewer => "[v] Change viewer",
+            Region::CommitMessage => "[m] Commit message",
         }
     }
 

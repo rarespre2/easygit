@@ -1,32 +1,43 @@
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
+    prelude::Stylize,
     style::{Color, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Widget},
 };
 
-use crate::git::{ChangeType, FileChange, RepoStatus};
-
-const MAX_LISTED_CHANGES: usize = 5;
+use crate::{
+    git::{ChangeType, FileChange, RepoStatus},
+    regions::Region,
+};
 
 pub struct StatusBox<'a> {
     status: &'a RepoStatus,
+    region: Region,
 }
 
 impl<'a> StatusBox<'a> {
-    pub fn new(status: &'a RepoStatus) -> Self {
-        Self { status }
+    pub fn new(status: &'a RepoStatus, region: Region) -> Self {
+        Self { status, region }
     }
 }
 
 impl Widget for StatusBox<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let title = format!("Status ({} changes)", self.status.total_changes());
-        let block = Block::default()
+        let title = self
+            .status
+            .repo_name
+            .as_deref()
+            .map(|name| format!("Workspace • {name}"))
+            .unwrap_or_else(|| "Workspace".to_string());
+        let mut block = Block::default()
             .borders(Borders::ALL)
             .title(title)
             .style(Style::default().fg(Color::Yellow));
+        block = block
+            .title_bottom(keys_hint_line(self.region))
+            .border_set(ratatui::symbols::border::THICK);
         let inner = block.inner(area);
         block.render(area, buf);
 
@@ -40,33 +51,53 @@ fn render_lines(status: &RepoStatus) -> Vec<Line<'static>> {
         return vec![Line::from(err.clone()).style(Style::default().fg(Color::Red))];
     }
 
+    vec![overview_line(status)]
+}
+
+fn overview_line(status: &RepoStatus) -> Line<'static> {
+    let mut spans = Vec::new();
+
+    spans.push(clean_badge(status));
+    spans.push(Span::raw("  "));
+
+    let summary_style = Style::default().fg(Color::Yellow);
+    spans.push(Span::styled(summary_text(status), summary_style));
+
+    Line::from(spans)
+}
+
+fn keys_hint_line(region: Region) -> Line<'static> {
+    let common = vec!["[q] quit".to_string(), "[l] local changes".to_string()];
+    let specific: Vec<String> = match region {
+        Region::Branches => vec![
+            "[↑↓] move".to_string(),
+            "[Enter] checkout".to_string(),
+            "[u] update".to_string(),
+            "[p] push".to_string(),
+            "[a] add".to_string(),
+            "[x] delete".to_string(),
+        ],
+        Region::Commits => vec!["[↑↓] move".to_string()],
+        Region::Details => Vec::new(),
+        Region::Stashes => Vec::new(),
+        Region::Changes | Region::ChangeViewer | Region::CommitMessage => Vec::new(),
+    };
+
+    let mut text = common.join("  ");
+    if !specific.is_empty() {
+        text.push_str("  │  ");
+        text.push_str(&specific.join("  "));
+    }
+
+    Line::from(Span::styled(text, Style::default().fg(Color::Yellow)))
+}
+
+fn clean_badge(status: &RepoStatus) -> Span<'static> {
     if status.is_clean() {
-        return vec![Line::from("Working tree clean").style(Style::default().fg(Color::Green))];
+        Span::styled("✓ clean", Style::default().fg(Color::Green))
+    } else {
+        Span::styled("● dirty", Style::default().fg(Color::Red))
     }
-
-    let mut lines = Vec::new();
-    lines.push(Line::from(summary_text(status)));
-
-    for change in status.changes.iter().take(MAX_LISTED_CHANGES) {
-        let label = change_label(change.change);
-        let line = Line::from(vec![
-            Span::styled(
-                format!("- {label}"),
-                Style::default().fg(change_color(change.change)),
-            ),
-            Span::raw(format!(" {}", change.path)),
-        ]);
-        lines.push(line);
-    }
-
-    if status.changes.len() > MAX_LISTED_CHANGES {
-        lines.push(Line::from(format!(
-            "… and {} more",
-            status.changes.len() - MAX_LISTED_CHANGES
-        )));
-    }
-
-    lines
 }
 
 fn summary_text(status: &RepoStatus) -> String {
@@ -77,13 +108,9 @@ fn summary_text(status: &RepoStatus) -> String {
         .collect::<Vec<_>>();
 
     if parts.is_empty() {
-        format!("Local changes: {}", status.total_changes())
+        format!("{} changes", status.total_changes())
     } else {
-        format!(
-            "Local changes: {} ({})",
-            status.total_changes(),
-            parts.join(", ")
-        )
+        format!("{} changes ({})", status.total_changes(), parts.join(", "))
     }
 }
 
@@ -120,20 +147,6 @@ fn change_label(change: ChangeType) -> &'static str {
         ChangeType::Untracked => "untracked",
         ChangeType::Unmerged => "unmerged",
         ChangeType::Unknown => "other",
-    }
-}
-
-fn change_color(change: ChangeType) -> Color {
-    match change {
-        ChangeType::Added => Color::Green,
-        ChangeType::Modified => Color::Yellow,
-        ChangeType::Deleted => Color::Red,
-        ChangeType::Renamed => Color::Cyan,
-        ChangeType::Copied => Color::Blue,
-        ChangeType::TypeChange => Color::Blue,
-        ChangeType::Untracked => Color::Magenta,
-        ChangeType::Unmerged => Color::LightRed,
-        ChangeType::Unknown => Color::Gray,
     }
 }
 
@@ -193,12 +206,50 @@ mod tests {
                     change: ChangeType::Untracked,
                 },
             ],
-            error: None,
+            ..RepoStatus::default()
         };
 
         assert_eq!(
             summary_text(&status),
-            "Local changes: 2 (1 added, 1 untracked)".to_string()
+            "2 changes (1 added, 1 untracked)".to_string()
         );
+    }
+
+    #[test]
+    fn shows_branch_hints_without_footer_keys() {
+        let line = keys_hint_line(Region::Branches);
+        let content = line
+            .spans
+            .iter()
+            .map(|s| s.content.clone())
+            .collect::<Vec<_>>()
+            .join("");
+        assert!(content.contains("[q] quit"));
+        assert!(content.contains("[l] local changes"));
+        assert!(content.contains("[↑↓] move"));
+        assert!(content.contains("[Enter] checkout"));
+        assert!(content.contains("[u] update"));
+        assert!(content.contains("[p] push"));
+        assert!(content.contains("[a] add"));
+        assert!(content.contains("[x] delete"));
+    }
+
+    #[test]
+    fn shows_simple_hints_for_commits() {
+        let line = keys_hint_line(Region::Commits);
+        let content = line
+            .spans
+            .iter()
+            .map(|s| s.content.clone())
+            .collect::<Vec<_>>()
+            .join("");
+        assert!(content.contains("[q] quit"));
+        assert!(content.contains("[↑↓] move"));
+    }
+
+    #[test]
+    fn keys_footer_can_inherit_border_color() {
+        let colored = keys_hint_line(Region::Branches).fg(Color::Yellow);
+        assert_eq!(colored.style.fg, Some(Color::Yellow));
     }
 }

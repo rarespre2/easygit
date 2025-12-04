@@ -46,6 +46,7 @@ pub struct FileChange {
 pub struct RepoStatus {
     pub changes: Vec<FileChange>,
     pub error: Option<String>,
+    pub repo_name: Option<String>,
 }
 
 impl RepoStatus {
@@ -279,24 +280,23 @@ pub fn fetch_repo_status() -> RepoStatus {
 }
 
 pub fn fetch_repo_status_in(path: impl AsRef<Path>) -> RepoStatus {
+    let path = path.as_ref();
     match try_fetch_repo_status(path) {
-        Ok(changes) => RepoStatus {
-            changes,
-            error: None,
-        },
+        Ok(status) => status,
         Err(err) => RepoStatus {
             changes: Vec::new(),
             error: Some(err),
+            repo_name: repository_name(path),
         },
     }
 }
 
-fn try_fetch_repo_status(path: impl AsRef<Path>) -> Result<Vec<FileChange>, String> {
+fn try_fetch_repo_status(path: &Path) -> Result<RepoStatus, String> {
     let output = std::process::Command::new("git")
         .arg("status")
         .arg("--porcelain=v1")
         .arg("--untracked-files=all")
-        .current_dir(path.as_ref())
+        .current_dir(path)
         .output()
         .map_err(|err| format!("Failed to run git status: {err}"))?;
 
@@ -311,11 +311,12 @@ fn try_fetch_repo_status(path: impl AsRef<Path>) -> Result<Vec<FileChange>, Stri
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let changes = stdout
-        .lines()
-        .filter_map(parse_status_line)
-        .collect::<Vec<_>>();
-    Ok(changes)
+    let changes = stdout.lines().filter_map(parse_status_line).collect();
+    Ok(RepoStatus {
+        changes,
+        error: None,
+        repo_name: repository_name(path),
+    })
 }
 
 fn parse_status_line(line: &str) -> Option<FileChange> {
@@ -357,6 +358,39 @@ fn change_type_from_code(code: &str) -> ChangeType {
         '?' => ChangeType::Untracked,
         _ => ChangeType::Unknown,
     }
+}
+
+fn repository_name(path: &Path) -> Option<String> {
+    repository_name_with_gix(path)
+        .or_else(|| repository_name_with_git(path))
+        .or_else(|| path.file_name().map(|name| name.to_string_lossy().to_string()))
+}
+
+fn repository_name_with_gix(path: &Path) -> Option<String> {
+    let repo = gix::discover(path).ok()?;
+    let work_dir = repo.workdir()?;
+    work_dir
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+}
+
+fn repository_name_with_git(path: &Path) -> Option<String> {
+    let output = std::process::Command::new("git")
+        .arg("rev-parse")
+        .arg("--show-toplevel")
+        .current_dir(path)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let root = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if root.is_empty() {
+        return None;
+    }
+    std::path::Path::new(&root)
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
 }
 
 fn find_main_branch_in(path: impl AsRef<Path>) -> Option<String> {
@@ -793,10 +827,6 @@ mod tests {
         );
     }
 
-    fn branch_names(info: &BranchInfo) -> Vec<String> {
-        info.branches.iter().map(|b| b.name.clone()).collect()
-    }
-
     #[test]
     fn fetches_ahead_behind_counts_when_upstream_set() {
         let repo = TestRepo::init().unwrap();
@@ -850,6 +880,10 @@ mod tests {
             .expect("feature branch");
         assert_eq!(feature.ahead, Some(1));
         assert_eq!(feature.behind, Some(1));
+    }
+
+    fn branch_names(info: &BranchInfo) -> Vec<String> {
+        info.branches.iter().map(|b| b.name.clone()).collect()
     }
 
     #[test]
@@ -992,6 +1026,23 @@ mod tests {
         );
         assert!(status.error.is_none());
     }
+
+    #[test]
+    fn fetch_repo_status_sets_repo_name() {
+        let repo = TestRepo::init().unwrap();
+        repo.write_file("file.txt", "content").unwrap();
+        repo.git(&["add", "."]).unwrap();
+        repo.git(&["commit", "-m", "init"]).unwrap();
+
+        let status = fetch_repo_status_in(repo.path());
+
+        let expected_name = repo
+            .path()
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string());
+        assert_eq!(status.repo_name, expected_name);
+    }
+
 
     fn create_bare_repo() -> Result<PathBuf, String> {
         let path = unique_path("remote");
