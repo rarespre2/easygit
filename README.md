@@ -21,23 +21,6 @@ easygit is a Rust terminal UI for exploring Git concepts without leaving your sh
 cargo run
 ```
 
-## Install via npm (prebuilt binary)
-```bash
-npx easygit-tui
-# or install globally
-npm i -g easygit-tui
-easygit
-```
-
-The npm package downloads a prebuilt binary from the GitHub release matching the package version (`v<version>`). Supported platforms: Linux/macOS (x64, arm64) and Windows (x64, arm64).
-
-### Publishing the npm package
-1. Build and archive binaries per target:
-   - Linux/macOS: place `easygit` at archive root and package as `easygit-<platform>-<arch>.tar.gz` (e.g., `easygit-linux-x64.tar.gz`, `easygit-macos-arm64.tar.gz`).
-   - Windows: place `easygit.exe` at archive root and package as `easygit-windows-<arch>.zip` (e.g., `easygit-windows-x64.zip`).
-2. Create a GitHub release tagged `v<version>` and upload those archives.
-3. From `npm/`, run `npm publish` (the `postinstall` script will fetch the correct archive for end users). Use `EASYGIT_BINARY_HOST` to point at a different host if needed.
-
 ## Development
 - Format and lint: `cargo fmt` and `cargo clippy --all-targets --all-features`
 - Tests: `cargo test`
