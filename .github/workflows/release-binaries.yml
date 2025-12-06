@@ -76,11 +76,11 @@ jobs:
         env:
           ARCHIVE_NAME: easygit-${{ matrix.archive_platform }}-${{ matrix.archive_arch }}.${{ matrix.archive_ext }}
         run: |
-          $BinPath = "target/${{ matrix.target }}/release/${{ env:BIN_NAME }}${{ matrix.bin_suffix }}"
+          $BinPath = "target/${{ matrix.target }}/release/$Env:BIN_NAME${{ matrix.bin_suffix }}"
           New-Item -ItemType Directory -Force -Path artifacts | Out-Null
-          Copy-Item $BinPath "artifacts/${{ env:BIN_NAME }}${{ matrix.bin_suffix }}" -Force
-          Compress-Archive -Path "artifacts/${{ env:BIN_NAME }}${{ matrix.bin_suffix }}" -DestinationPath "artifacts/$($env:ARCHIVE_NAME)" -Force
-          Remove-Item "artifacts/${{ env:BIN_NAME }}${{ matrix.bin_suffix }}" -Force
+          Copy-Item $BinPath "artifacts/$Env:BIN_NAME${{ matrix.bin_suffix }}" -Force
+          Compress-Archive -Path "artifacts/$Env:BIN_NAME${{ matrix.bin_suffix }}" -DestinationPath "artifacts/$Env:ARCHIVE_NAME" -Force
+          Remove-Item "artifacts/$Env:BIN_NAME${{ matrix.bin_suffix }}" -Force
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
