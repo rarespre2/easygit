@@ -208,10 +208,8 @@ fn render_commit_message(
     editing: bool,
 ) {
     let mode = if editing { "INSERT" } else { "NAV" };
-    let cursor = if editing && focused { "_" } else { "" };
     let mut spans = vec![Span::raw(format!("[{mode}] Commit message: "))];
     spans.extend(input.render_line("> "));
-    spans.push(Span::raw(cursor));
     Paragraph::new(Line::from(spans)).render(area, buf);
 }
 
