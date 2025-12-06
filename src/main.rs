@@ -251,17 +251,36 @@ impl App {
         }
 
         if self.popup_region == Region::CommitMessage {
-            match code {
-                KeyCode::Esc => {
-                    self.commit_message_editing = false;
-                    return;
-                }
-                _ => {
-                    if !self.commit_message_editing {
-                        self.commit_message_editing = true;
+            if self.commit_message_editing {
+                match code {
+                    KeyCode::Esc => {
+                        self.commit_message_editing = false;
+                        return;
                     }
-                    self.handle_commit_message_key(code);
-                    return;
+                    _ => {
+                        self.handle_commit_message_key(code);
+                        return;
+                    }
+                }
+            } else {
+                match code {
+                    KeyCode::Char('m') => {
+                        self.commit_message_editing = true;
+                        return;
+                    }
+                    KeyCode::Char('c') => {
+                        self.popup_region = Region::Changes;
+                        return;
+                    }
+                    KeyCode::Char('v') => {
+                        self.popup_region = Region::ChangeViewer;
+                        return;
+                    }
+                    KeyCode::Esc => {
+                        self.show_changes_popup = false;
+                        return;
+                    }
+                    _ => return,
                 }
             }
         }
