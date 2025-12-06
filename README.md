@@ -21,6 +21,15 @@ easygit is a Rust terminal UI for exploring Git concepts without leaving your sh
 cargo run
 ```
 
+## Install
+With Rust toolchain:
+```bash
+cargo install easygit
+easygit
+```
+
+Don’t have cargo installed? Follow the official Rust install guide: https://www.rust-lang.org/tools/install
+
 ## Development
 - Format and lint: `cargo fmt` and `cargo clippy --all-targets --all-features`
 - Tests: `cargo test`

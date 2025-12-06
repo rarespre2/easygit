@@ -2,6 +2,13 @@
 name = "easygit"
 version = "0.1.0"
 edition = "2024"
+description = "Rust terminal UI for exploring Git concepts with Ratatui and Crossterm"
+license = "MIT"
+repository = "https://github.com/rarespre2/easygit"
+homepage = "https://github.com/rarespre2/easygit"
+readme = "README.md"
+keywords = ["git", "tui", "terminal", "rust"]
+categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]
 crossterm = "0.29.0"
