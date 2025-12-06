@@ -1,12 +1,6 @@
 use crossterm::event::{KeyCode, KeyEvent};
 
-use crate::{
-    branch_input::BranchInput,
-    git,
-    regions::Region,
-    ui::branches,
-    App,
-};
+use crate::{App, branch_input::BranchInput, git, regions::Region, ui::branches};
 
 impl App {
     pub fn refresh_branches(&mut self) {

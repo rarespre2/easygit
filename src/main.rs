@@ -13,8 +13,8 @@ use std::{
 
 use crate::git::{BranchInfo, RepoStatus};
 use crate::regions::Region;
-use crate::ui::{branches, commits, details, stashes, status};
-use notification::{render_notification, Notification};
+use crate::ui::{branches, commits, details, popup, stashes, status};
+use notification::{Notification, render_notification};
 
 mod app;
 mod branch_input;
@@ -42,6 +42,11 @@ pub struct App {
     last_refresh: Instant,
     refresh_interval: Duration,
     notification: Option<Notification>,
+    show_changes_popup: bool,
+    popup_region: Region,
+    selected_change: Option<usize>,
+    commit_input: ui::input::TextInput,
+    commit_message_editing: bool,
 }
 
 impl Default for App {
@@ -57,6 +62,11 @@ impl Default for App {
             last_refresh: Instant::now(),
             refresh_interval: Duration::from_millis(1000),
             notification: None,
+            show_changes_popup: false,
+            popup_region: Region::Changes,
+            selected_change: None,
+            commit_input: ui::input::TextInput::default(),
+            commit_message_editing: false,
         };
         app.refresh_all();
         app
@@ -110,12 +120,22 @@ impl App {
             return;
         }
 
+        if self.show_changes_popup {
+            self.handle_popup_keys(key_event.code);
+            return;
+        }
+
         match key_event.code {
             KeyCode::Char('q') => self.exit(),
             KeyCode::Char('b') => self.select_region(Region::Branches),
             KeyCode::Char('c') => self.select_region(Region::Commits),
             KeyCode::Char('d') => self.select_region(Region::Details),
             KeyCode::Char('s') => self.select_region(Region::Stashes),
+            KeyCode::Char('l') => {
+                self.show_changes_popup = true;
+                self.popup_region = Region::Changes;
+                self.ensure_change_selection();
+            }
             code => {
                 self.handle_branch_region_keys(code);
                 self.handle_commits_region_keys(code);
@@ -132,7 +152,12 @@ impl App {
     }
 
     fn refresh_status(&mut self) {
+        let previous_selection = self
+            .selected_change
+            .and_then(|idx| self.repo_status.changes.get(idx))
+            .map(|change| change.path.clone());
         self.repo_status = git::fetch_repo_status();
+        self.reselect_change(previous_selection);
     }
 
     fn show_notification(&mut self, message: String) {
@@ -149,14 +174,10 @@ impl App {
             }
         }
     }
-
 }
 
 fn should_handle_key(key_event: &KeyEvent) -> bool {
-    matches!(
-        key_event.kind,
-        KeyEventKind::Press | KeyEventKind::Repeat
-    )
+    matches!(key_event.kind, KeyEventKind::Press | KeyEventKind::Repeat)
 }
 
 impl Widget for &App {
@@ -165,7 +186,7 @@ impl Widget for &App {
             .direction(Direction::Vertical)
             .constraints(vec![Constraint::Percentage(10), Constraint::Percentage(90)])
             .split(area);
-        status::StatusBox::new(&self.repo_status).render(layout[0], buf);
+        status::StatusBox::new(&self.repo_status, self.selected_region).render(layout[0], buf);
 
         let outer_layout = Layout::default()
             .direction(Direction::Horizontal)
@@ -182,18 +203,23 @@ impl Widget for &App {
             .constraints(vec![Constraint::Percentage(70), Constraint::Percentage(30)])
             .split(outer_layout[1]);
 
-        branches::panel_with_child(
+        branches::panel(
             self.selected_region == Region::Branches,
-            branches::BranchList::new(&self.selected_branch),
+            &self.selected_branch,
         )
         .render(left_layout[0], buf);
-        stashes::panel(self.selected_region == Region::Stashes).render(left_layout[1], buf);
-        commits::panel_with_child(
-            self.selected_region == Region::Commits,
-            commits::CommitList::new(&self.commits),
+        stashes::panel_with_child(
+            self.selected_region == Region::Stashes,
+            stashes::StashesView,
         )
-        .render(right_layout[0], buf);
-        details::panel(self.selected_region == Region::Details).render(right_layout[1], buf);
+        .render(left_layout[1], buf);
+        commits::panel(self.selected_region == Region::Commits, &self.commits)
+            .render(right_layout[0], buf);
+        details::panel_with_child(
+            self.selected_region == Region::Details,
+            details::DetailsView::new(self.commits.hovered_commit()),
+        )
+        .render(right_layout[1], buf);
 
         if let Some(input) = &self.branch_input {
             branch_input::render_branch_popup(area, buf, input);
@@ -201,6 +227,80 @@ impl Widget for &App {
 
         if let Some(notification) = &self.notification {
             render_notification(area, buf, notification);
+        }
+
+        if self.show_changes_popup {
+            popup::CompartmentPopup::render(
+                area,
+                buf,
+                self.popup_region,
+                &self.repo_status,
+                self.selected_change,
+                &self.commit_input,
+                self.commit_message_editing,
+            );
+        }
+    }
+}
+
+impl App {
+    fn handle_popup_keys(&mut self, code: KeyCode) {
+        if let KeyCode::Char('q') = code {
+            self.show_changes_popup = false;
+            return;
+        }
+
+        if self.popup_region == Region::CommitMessage {
+            if self.commit_message_editing {
+                match code {
+                    KeyCode::Esc => {
+                        self.commit_message_editing = false;
+                        return;
+                    }
+                    _ => {
+                        self.handle_commit_message_key(code);
+                        return;
+                    }
+                }
+            } else {
+                match code {
+                    KeyCode::Char('m') => {
+                        self.commit_message_editing = true;
+                        return;
+                    }
+                    KeyCode::Char('c') => {
+                        self.popup_region = Region::Changes;
+                        return;
+                    }
+                    KeyCode::Char('v') => {
+                        self.popup_region = Region::ChangeViewer;
+                        return;
+                    }
+                    KeyCode::Esc => {
+                        self.show_changes_popup = false;
+                        return;
+                    }
+                    _ => return,
+                }
+            }
+        }
+
+        match code {
+            KeyCode::Char('c') => self.popup_region = Region::Changes,
+            KeyCode::Char('v') => self.popup_region = Region::ChangeViewer,
+            KeyCode::Char('m') => {
+                self.popup_region = Region::CommitMessage;
+                self.commit_message_editing = true;
+            }
+            KeyCode::Esc => {
+                self.show_changes_popup = false;
+                return;
+            }
+            _ => {}
+        }
+
+        if self.popup_region == Region::Changes {
+            self.handle_changes_popup_key(code);
         }
     }
 }
@@ -215,8 +315,7 @@ mod tests {
         let press = KeyEvent::new(KeyCode::Up, KeyModifiers::NONE);
         assert!(should_handle_key(&press));
 
-        let repeat =
-            KeyEvent::new_with_kind(KeyCode::Up, KeyModifiers::NONE, KeyEventKind::Repeat);
+        let repeat = KeyEvent::new_with_kind(KeyCode::Up, KeyModifiers::NONE, KeyEventKind::Repeat);
         assert!(should_handle_key(&repeat));
 
         let release =

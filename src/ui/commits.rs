@@ -17,6 +17,10 @@ pub fn panel_with_child<W: Widget>(selected: bool, child: W) -> CommitsPanel<W> 
     PanelBlock::with_child(Region::Commits, selected, child)
 }
 
+pub fn panel(selected: bool, state: &CommitsState) -> CommitsPanelWidget<'_> {
+    CommitsPanelWidget { state, selected }
+}
+
 #[derive(Debug, Default)]
 pub struct CommitsState {
     pub commits: Vec<Commit>,
@@ -68,6 +72,10 @@ impl CommitsState {
             .and_then(|idx| self.commits.get(idx))
             .map(|c| c.id.as_str())
     }
+
+    pub fn hovered_commit(&self) -> Option<&Commit> {
+        self.hovered.and_then(|idx| self.commits.get(idx))
+    }
 }
 
 pub struct CommitList<'a> {
@@ -77,6 +85,38 @@ pub struct CommitList<'a> {
 impl<'a> CommitList<'a> {
     pub fn new(state: &'a CommitsState) -> Self {
         Self { state }
+    }
+}
+
+pub struct CommitsPanelWidget<'a> {
+    state: &'a CommitsState,
+    selected: bool,
+}
+
+impl Widget for CommitsPanelWidget<'_> {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        let base_block = ratatui::widgets::Block::bordered()
+            .style(Style::default().fg(Region::Commits.color(self.selected)))
+            .border_set(ratatui::symbols::border::THICK);
+        let inner = base_block.inner(area);
+
+        let title = if let (Some(hovered), true) = (
+            self.state.hovered,
+            self.state.commits.len() > inner.height as usize,
+        ) {
+            format!(
+                "{} ({}/{})",
+                Region::Commits.as_str(),
+                hovered + 1,
+                self.state.commits.len()
+            )
+        } else {
+            Region::Commits.as_str().to_string()
+        };
+
+        let block = base_block.title(title);
+        block.render(area, buf);
+        CommitList::new(self.state).render(inner, buf);
     }
 }
 
@@ -106,13 +146,16 @@ impl Widget for CommitList<'_> {
             Paragraph::new("No commits found").render(list_area, buf);
             return;
         }
-
-        let items: Vec<ListItem> = self
-            .state
-            .commits
+        let (start, end) = viewport(
+            self.state.commits.len(),
+            self.state.hovered,
+            list_area.height,
+        );
+        let items: Vec<ListItem> = self.state.commits[start..end]
             .iter()
             .enumerate()
-            .map(|(idx, commit)| {
+            .map(|(offset, commit)| {
+                let idx = start + offset;
                 let branch_label = format_branch_label(&commit.branches);
                 let padded = pad_branch(&branch_label, 14);
                 let is_hovered = Some(idx) == self.state.hovered;
@@ -169,6 +212,21 @@ fn preferred_hover_index(commits: &[Commit], previous_id: Option<&str>) -> Optio
         }
     }
     Some(0)
+}
+
+fn viewport(len: usize, hovered: Option<usize>, height: u16) -> (usize, usize) {
+    if len == 0 || height == 0 {
+        return (0, 0);
+    }
+    let visible = height as usize;
+    let focus = hovered.unwrap_or(0).min(len.saturating_sub(1));
+    if len <= visible {
+        return (0, len);
+    }
+    let max_start = len - visible;
+    let start = focus.saturating_sub(visible / 2).min(max_start);
+    let end = start + visible;
+    (start, end)
 }
 
 #[cfg(test)]

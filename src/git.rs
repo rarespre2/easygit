@@ -40,12 +40,14 @@ pub enum ChangeType {
 pub struct FileChange {
     pub path: String,
     pub change: ChangeType,
+    pub staged: bool,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct RepoStatus {
     pub changes: Vec<FileChange>,
     pub error: Option<String>,
+    pub repo_name: Option<String>,
 }
 
 impl RepoStatus {
@@ -93,6 +95,115 @@ pub fn checkout_branch_in(path: impl AsRef<Path>, branch: &str) -> Result<(), St
         Ok(())
     } else {
         Err(format!("git checkout exited with status: {status}"))
+    }
+}
+
+pub fn stage_change(path: &str) -> Result<(), String> {
+    stage_change_in(".", path)
+}
+
+pub fn stage_change_in(repo: impl AsRef<Path>, path: &str) -> Result<(), String> {
+    let output = std::process::Command::new("git")
+        .arg("add")
+        .arg("--")
+        .arg(path)
+        .current_dir(repo.as_ref())
+        .output()
+        .map_err(|err| format!("Failed to run git add: {err}"))?;
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(format!("git add failed: {}", stderr.trim()))
+    }
+}
+
+pub fn unstage_change(path: &str) -> Result<(), String> {
+    unstage_change_in(".", path)
+}
+
+pub fn unstage_change_in(repo: impl AsRef<Path>, path: &str) -> Result<(), String> {
+    let output = std::process::Command::new("git")
+        .arg("reset")
+        .arg("HEAD")
+        .arg("--")
+        .arg(path)
+        .current_dir(repo.as_ref())
+        .output()
+        .map_err(|err| format!("Failed to run git reset: {err}"))?;
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(format!("git reset failed: {}", stderr.trim()))
+    }
+}
+
+pub fn discard_change(path: &str) -> Result<(), String> {
+    discard_change_in(".", path)
+}
+
+pub fn discard_change_in(repo: impl AsRef<Path>, path: &str) -> Result<(), String> {
+    let repo_path = repo.as_ref();
+    let is_tracked = std::process::Command::new("git")
+        .arg("ls-files")
+        .arg("--error-unmatch")
+        .arg("--")
+        .arg(path)
+        .current_dir(repo_path)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false);
+
+    if is_tracked {
+        let output = std::process::Command::new("git")
+            .arg("checkout")
+            .arg("--")
+            .arg(path)
+            .current_dir(repo_path)
+            .output()
+            .map_err(|err| format!("Failed to discard change: {err}"))?;
+
+        if output.status.success() {
+            Ok(())
+        } else {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            Err(format!("Discard failed: {}", stderr.trim()))
+        }
+    } else {
+        let mut full_path = repo_path.to_path_buf();
+        full_path.push(path);
+        std::fs::remove_file(&full_path)
+            .map_err(|err| format!("Failed to delete untracked file {path}: {err}"))
+    }
+}
+
+pub fn commit_staged(message: &str) -> Result<(), String> {
+    commit_staged_in(".", message)
+}
+
+pub fn commit_staged_in(repo: impl AsRef<Path>, message: &str) -> Result<(), String> {
+    if message.trim().is_empty() {
+        return Err("Commit message cannot be empty".to_string());
+    }
+
+    let output = std::process::Command::new("git")
+        .arg("commit")
+        .arg("-m")
+        .arg(message)
+        .current_dir(repo.as_ref())
+        .output()
+        .map_err(|err| format!("Failed to run git commit: {err}"))?;
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(format!("git commit failed: {}", stderr.trim()))
     }
 }
 
@@ -279,24 +390,23 @@ pub fn fetch_repo_status() -> RepoStatus {
 }
 
 pub fn fetch_repo_status_in(path: impl AsRef<Path>) -> RepoStatus {
+    let path = path.as_ref();
     match try_fetch_repo_status(path) {
-        Ok(changes) => RepoStatus {
-            changes,
-            error: None,
-        },
+        Ok(status) => status,
         Err(err) => RepoStatus {
             changes: Vec::new(),
             error: Some(err),
+            repo_name: repository_name(path),
         },
     }
 }
 
-fn try_fetch_repo_status(path: impl AsRef<Path>) -> Result<Vec<FileChange>, String> {
+fn try_fetch_repo_status(path: &Path) -> Result<RepoStatus, String> {
     let output = std::process::Command::new("git")
         .arg("status")
         .arg("--porcelain=v1")
         .arg("--untracked-files=all")
-        .current_dir(path.as_ref())
+        .current_dir(path)
         .output()
         .map_err(|err| format!("Failed to run git status: {err}"))?;
 
@@ -311,29 +421,64 @@ fn try_fetch_repo_status(path: impl AsRef<Path>) -> Result<Vec<FileChange>, Stri
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let changes = stdout
-        .lines()
-        .filter_map(parse_status_line)
-        .collect::<Vec<_>>();
-    Ok(changes)
+    let mut changes: Vec<FileChange> = stdout.lines().flat_map(parse_status_line).collect();
+    changes.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(RepoStatus {
+        changes,
+        error: None,
+        repo_name: repository_name(path),
+    })
 }
 
-fn parse_status_line(line: &str) -> Option<FileChange> {
+fn parse_status_line(line: &str) -> Vec<FileChange> {
     if line.len() < 3 {
-        return None;
+        return Vec::new();
     }
     let code = &line[0..2];
     let mut path = line[3..].trim();
     if path.is_empty() {
-        return None;
+        return Vec::new();
     }
     if let Some((_, new)) = path.split_once(" -> ") {
         path = new.trim();
     }
-    Some(FileChange {
-        path: path.to_string(),
-        change: change_type_from_code(code),
-    })
+    let mut entries = Vec::new();
+    if code == "??" {
+        entries.push(FileChange {
+            path: path.to_string(),
+            change: ChangeType::Untracked,
+            staged: false,
+        });
+        return entries;
+    }
+
+    let mut chars = code.chars();
+    let x = chars.next().unwrap_or(' ');
+    let y = chars.next().unwrap_or(' ');
+
+    if x != ' ' {
+        entries.push(FileChange {
+            path: path.to_string(),
+            change: change_type_from_flag(x),
+            staged: true,
+        });
+    }
+    if y != ' ' {
+        entries.push(FileChange {
+            path: path.to_string(),
+            change: change_type_from_flag(y),
+            staged: false,
+        });
+    }
+
+    entries
+}
+
+fn is_staged(code: &str) -> bool {
+    if code == "??" {
+        return false;
+    }
+    code.chars().next().map_or(false, |c| c != ' ')
 }
 
 fn change_type_from_code(code: &str) -> ChangeType {
@@ -357,6 +502,56 @@ fn change_type_from_code(code: &str) -> ChangeType {
         '?' => ChangeType::Untracked,
         _ => ChangeType::Unknown,
     }
+}
+
+fn change_type_from_flag(flag: char) -> ChangeType {
+    match flag {
+        'A' => ChangeType::Added,
+        'M' => ChangeType::Modified,
+        'D' => ChangeType::Deleted,
+        'R' => ChangeType::Renamed,
+        'C' => ChangeType::Copied,
+        'T' => ChangeType::TypeChange,
+        'U' => ChangeType::Unmerged,
+        '?' => ChangeType::Untracked,
+        _ => ChangeType::Unknown,
+    }
+}
+
+fn repository_name(path: &Path) -> Option<String> {
+    repository_name_with_gix(path)
+        .or_else(|| repository_name_with_git(path))
+        .or_else(|| {
+            path.file_name()
+                .map(|name| name.to_string_lossy().to_string())
+        })
+}
+
+fn repository_name_with_gix(path: &Path) -> Option<String> {
+    let repo = gix::discover(path).ok()?;
+    let work_dir = repo.workdir()?;
+    work_dir
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+}
+
+fn repository_name_with_git(path: &Path) -> Option<String> {
+    let output = std::process::Command::new("git")
+        .arg("rev-parse")
+        .arg("--show-toplevel")
+        .current_dir(path)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let root = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if root.is_empty() {
+        return None;
+    }
+    std::path::Path::new(&root)
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
 }
 
 fn find_main_branch_in(path: impl AsRef<Path>) -> Option<String> {
@@ -793,10 +988,6 @@ mod tests {
         );
     }
 
-    fn branch_names(info: &BranchInfo) -> Vec<String> {
-        info.branches.iter().map(|b| b.name.clone()).collect()
-    }
-
     #[test]
     fn fetches_ahead_behind_counts_when_upstream_set() {
         let repo = TestRepo::init().unwrap();
@@ -850,6 +1041,10 @@ mod tests {
             .expect("feature branch");
         assert_eq!(feature.ahead, Some(1));
         assert_eq!(feature.behind, Some(1));
+    }
+
+    fn branch_names(info: &BranchInfo) -> Vec<String> {
+        info.branches.iter().map(|b| b.name.clone()).collect()
     }
 
     #[test]
@@ -937,31 +1132,51 @@ mod tests {
 
     #[test]
     fn parses_porcelain_lines_into_changes() {
-        let modified = parse_status_line(" M src/main.rs").unwrap();
+        let modified = parse_status_line(" M src/main.rs");
         assert_eq!(
             modified,
-            FileChange {
+            vec![FileChange {
                 path: "src/main.rs".to_string(),
-                change: ChangeType::Modified
-            }
+                change: ChangeType::Modified,
+                staged: false,
+            }]
         );
 
-        let renamed = parse_status_line("R  old.rs -> new.rs").unwrap();
+        let renamed = parse_status_line("R  old.rs -> new.rs");
         assert_eq!(
             renamed,
-            FileChange {
+            vec![FileChange {
                 path: "new.rs".to_string(),
-                change: ChangeType::Renamed
-            }
+                change: ChangeType::Renamed,
+                staged: true,
+            }]
         );
 
-        let untracked = parse_status_line("?? notes.txt").unwrap();
+        let untracked = parse_status_line("?? notes.txt");
         assert_eq!(
             untracked,
-            FileChange {
+            vec![FileChange {
                 path: "notes.txt".to_string(),
-                change: ChangeType::Untracked
-            }
+                change: ChangeType::Untracked,
+                staged: false,
+            }]
+        );
+
+        let dual = parse_status_line("MM src/lib.rs");
+        assert_eq!(
+            dual,
+            vec![
+                FileChange {
+                    path: "src/lib.rs".to_string(),
+                    change: ChangeType::Modified,
+                    staged: true,
+                },
+                FileChange {
+                    path: "src/lib.rs".to_string(),
+                    change: ChangeType::Modified,
+                    staged: false,
+                }
+            ]
         );
     }
 
@@ -991,6 +1206,145 @@ mod tests {
                 .any(|change| change.path == "new.txt" && change.change == ChangeType::Untracked)
         );
         assert!(status.error.is_none());
+    }
+
+    #[test]
+    fn fetch_repo_status_sets_repo_name() {
+        let repo = TestRepo::init().unwrap();
+        repo.write_file("file.txt", "content").unwrap();
+        repo.git(&["add", "."]).unwrap();
+        repo.git(&["commit", "-m", "init"]).unwrap();
+
+        let status = fetch_repo_status_in(repo.path());
+
+        let expected_name = repo
+            .path()
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string());
+        assert_eq!(status.repo_name, expected_name);
+    }
+
+    #[test]
+    fn sorts_changes_by_path_ignoring_stage_state() {
+        let repo = TestRepo::init().unwrap();
+        repo.write_file("seed.txt", "content").unwrap();
+        repo.git(&["add", "."]).unwrap();
+        repo.git(&["commit", "-m", "init"]).unwrap();
+
+        std::fs::create_dir_all(repo.path().join("dir")).unwrap();
+        repo.write_file("dir/b.txt", "b").unwrap();
+        repo.write_file("dir/a.txt", "a").unwrap();
+        repo.write_file("root.txt", "root").unwrap();
+
+        // Stage one file, leave others unstaged/untracked to ensure state does not influence order.
+        repo.git(&["add", "dir/b.txt"]).unwrap();
+
+        let status = fetch_repo_status_in(repo.path());
+        let paths: Vec<String> = status.changes.iter().map(|c| c.path.clone()).collect();
+
+        assert_eq!(paths, vec!["dir/a.txt", "dir/b.txt", "root.txt"]);
+    }
+
+    #[test]
+    fn stages_and_unstages_changes() {
+        let repo = TestRepo::init().unwrap();
+        repo.write_file("file.txt", "content").unwrap();
+        repo.git(&["add", "."]).unwrap();
+        repo.git(&["commit", "-m", "init"]).unwrap();
+
+        repo.write_file("file.txt", "updated").unwrap();
+        repo.write_file("new.txt", "untracked").unwrap();
+
+        let status = fetch_repo_status_in(repo.path());
+        assert!(
+            status.changes.iter().all(|change| change.staged == false),
+            "expected all changes to start unstaged: {:?}",
+            status.changes
+        );
+
+        stage_change_in(repo.path(), "file.txt").unwrap();
+        stage_change_in(repo.path(), "new.txt").unwrap();
+        let staged = fetch_repo_status_in(repo.path());
+
+        assert!(
+            staged
+                .changes
+                .iter()
+                .any(|c| c.path == "file.txt" && c.staged)
+        );
+        assert!(
+            staged
+                .changes
+                .iter()
+                .any(|c| c.path == "new.txt" && c.staged)
+        );
+
+        unstage_change_in(repo.path(), "file.txt").unwrap();
+        unstage_change_in(repo.path(), "new.txt").unwrap();
+
+        let unstaged = fetch_repo_status_in(repo.path());
+        assert!(
+            unstaged
+                .changes
+                .iter()
+                .any(|c| c.path == "file.txt" && !c.staged)
+        );
+        assert!(
+            unstaged
+                .changes
+                .iter()
+                .any(|c| c.path == "new.txt" && !c.staged)
+        );
+    }
+
+    #[test]
+    fn discards_tracked_and_untracked_changes() {
+        let repo = TestRepo::init().unwrap();
+        repo.write_file("file.txt", "content").unwrap();
+        repo.git(&["add", "."]).unwrap();
+        repo.git(&["commit", "-m", "init"]).unwrap();
+
+        // Modify tracked file.
+        repo.write_file("file.txt", "updated").unwrap();
+        // Add untracked file.
+        repo.write_file("new.txt", "new file").unwrap();
+
+        discard_change_in(repo.path(), "file.txt").unwrap();
+        discard_change_in(repo.path(), "new.txt").unwrap();
+
+        let status = fetch_repo_status_in(repo.path());
+        assert!(
+            !status
+                .changes
+                .iter()
+                .any(|c| c.path == "file.txt" || c.path == "new.txt")
+        );
+    }
+
+    #[test]
+    fn commits_staged_changes_with_message() {
+        let repo = TestRepo::init().unwrap();
+        repo.write_file("file.txt", "content").unwrap();
+        repo.git(&["add", "."]).unwrap();
+        repo.git(&["commit", "-m", "init"]).unwrap();
+
+        repo.write_file("file.txt", "updated").unwrap();
+        repo.git(&["add", "file.txt"]).unwrap();
+
+        commit_staged_in(repo.path(), "work").unwrap();
+
+        let log = Command::new("git")
+            .arg("-C")
+            .arg(repo.path().as_os_str())
+            .arg("log")
+            .arg("-1")
+            .arg("--pretty=%s")
+            .output()
+            .expect("git log");
+
+        assert!(log.status.success());
+        let subject = String::from_utf8_lossy(&log.stdout).trim().to_string();
+        assert_eq!(subject, "work");
     }
 
     fn create_bare_repo() -> Result<PathBuf, String> {

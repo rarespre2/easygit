@@ -1,6 +1,9 @@
 pub mod branches;
 pub mod commits;
 pub mod details;
+pub mod input;
+pub mod layout;
 pub mod panel;
+pub mod popup;
 pub mod stashes;
 pub mod status;

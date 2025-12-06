@@ -1,6 +1,6 @@
 use crossterm::event::KeyCode;
 
-use crate::{regions::Region, ui::commits, App};
+use crate::{App, regions::Region, ui::commits};
 
 impl App {
     pub fn refresh_commits(&mut self) {

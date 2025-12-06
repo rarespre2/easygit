@@ -1,11 +1,13 @@
 use crossterm::event::KeyCode;
 use ratatui::{
-    layout::{Alignment, Constraint, Direction, Layout, Rect},
+    layout::{Alignment, Rect},
     style::{Color, Modifier, Style},
     symbols::border,
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph, Widget},
 };
+
+use crate::ui::layout::centered_rect;
 
 #[derive(Debug, Default)]
 pub struct BranchInput {
@@ -46,16 +48,10 @@ impl BranchInput {
     }
 
     fn can_insert_dash(&self) -> bool {
-        let prev_is_dash = self
-            .value
-            .get(..self.cursor)
-            .and_then(|s| s.chars().last())
-            == Some('-');
-        let next_is_dash = self
-            .value
-            .get(self.cursor..)
-            .and_then(|s| s.chars().next())
-            == Some('-');
+        let prev_is_dash =
+            self.value.get(..self.cursor).and_then(|s| s.chars().last()) == Some('-');
+        let next_is_dash =
+            self.value.get(self.cursor..).and_then(|s| s.chars().next()) == Some('-');
         !prev_is_dash && !next_is_dash
     }
 
@@ -123,14 +119,12 @@ pub fn render_branch_popup(area: Rect, buf: &mut ratatui::buffer::Buffer, input:
         .alignment(Alignment::Left)
         .block(
             Block::default()
-                .title(
-                    Line::from(Span::styled(
-                        "Create Branch",
-                        Style::default()
-                            .fg(Color::Green)
-                            .add_modifier(Modifier::BOLD),
-                    )),
-                )
+                .title(Line::from(Span::styled(
+                    "Create Branch",
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD),
+                )))
                 .title_bottom(Line::from(vec![
                     Span::styled(
                         "[Enter] Create",
@@ -177,26 +171,6 @@ fn render_input_line(input: &BranchInput) -> Vec<Span<'_>> {
     }
 
     spans
-}
-
-fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
-    let vertical = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints(vec![
-            Constraint::Percentage((100 - percent_y) / 2),
-            Constraint::Percentage(percent_y),
-            Constraint::Percentage((100 - percent_y) / 2),
-        ])
-        .split(area);
-
-    Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints(vec![
-            Constraint::Percentage((100 - percent_x) / 2),
-            Constraint::Percentage(percent_x),
-            Constraint::Percentage((100 - percent_x) / 2),
-        ])
-        .split(vertical[1])[1]
 }
 
 #[cfg(test)]

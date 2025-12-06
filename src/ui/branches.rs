@@ -17,9 +17,43 @@ use super::panel::PanelBlock;
 pub type BranchesPanel<W = super::panel::Empty> = PanelBlock<W>;
 
 pub fn panel_with_child<W: Widget>(selected: bool, child: W) -> BranchesPanel<W> {
-    let footer = Line::from("[u] Update   [p] Push")
-        .style(Style::default().fg(Region::Branches.color(selected)));
-    PanelBlock::with_child(Region::Branches, selected, child).with_footer(footer)
+    PanelBlock::with_child(Region::Branches, selected, child)
+}
+
+pub fn panel(selected: bool, info: &BranchInfo) -> BranchPanel<'_> {
+    BranchPanel { info, selected }
+}
+
+pub struct BranchPanel<'a> {
+    info: &'a BranchInfo,
+    selected: bool,
+}
+
+impl Widget for BranchPanel<'_> {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        let base_block = ratatui::widgets::Block::bordered()
+            .style(Style::default().fg(Region::Branches.color(self.selected)))
+            .border_set(ratatui::symbols::border::THICK);
+        let inner = base_block.inner(area);
+
+        let title = if let (Some(hovered), true) = (
+            self.info.hovered,
+            self.info.branches.len() > inner.height as usize,
+        ) {
+            format!(
+                "{} ({}/{})",
+                Region::Branches.as_str(),
+                hovered + 1,
+                self.info.branches.len()
+            )
+        } else {
+            Region::Branches.as_str().to_string()
+        };
+
+        let block = base_block.title(title);
+        block.render(area, buf);
+        BranchList::new(self.info).render(inner, buf);
+    }
 }
 
 pub fn handle_key(info: &mut BranchInfo, key: KeyCode) -> Option<String> {
@@ -206,11 +240,12 @@ impl Widget for BranchList<'_> {
             return;
         }
 
-        let items: Vec<ListItem> = self
-            .branches
+        let (start, end) = viewport(self.branches.len(), self.hovered, area.height);
+        let items: Vec<ListItem> = self.branches[start..end]
             .iter()
             .enumerate()
-            .map(|(index, branch)| {
+            .map(|(offset, branch)| {
+                let index = start + offset;
                 let is_current = Some(branch.name.as_str()) == self.current;
                 let is_hovered = Some(index) == self.hovered;
                 let is_selected = Some(branch.name.as_str()) == self.selected;
@@ -260,6 +295,21 @@ impl Widget for BranchList<'_> {
 
         List::new(items).render(area, buf);
     }
+}
+
+fn viewport(len: usize, hovered: Option<usize>, height: u16) -> (usize, usize) {
+    if len == 0 || height == 0 {
+        return (0, 0);
+    }
+    let visible = height as usize;
+    let focus = hovered.unwrap_or(0).min(len.saturating_sub(1));
+    if len <= visible {
+        return (0, len);
+    }
+    let max_start = len - visible;
+    let start = focus.saturating_sub(visible / 2).min(max_start);
+    let end = start + visible;
+    (start, end)
 }
 
 fn visible_width(text: &str) -> usize {
