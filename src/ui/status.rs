@@ -67,29 +67,15 @@ fn overview_line(status: &RepoStatus) -> Line<'static> {
 }
 
 fn keys_hint_line(region: Region) -> Line<'static> {
-    let common = vec!["[q] quit".to_string(), "[l] local changes".to_string()];
-    let specific: Vec<String> = match region {
-        Region::Branches => vec![
-            "[↑↓] move".to_string(),
-            "[Enter] checkout".to_string(),
-            "[u] update".to_string(),
-            "[p] push".to_string(),
-            "[a] add".to_string(),
-            "[x] delete".to_string(),
-        ],
-        Region::Commits => vec!["[↑↓] move".to_string()],
-        Region::Details => Vec::new(),
-        Region::Stashes => Vec::new(),
-        Region::Changes | Region::ChangeViewer | Region::CommitMessage => Vec::new(),
-    };
-
-    let mut text = common.join("  ");
+    let mut text = vec!["[q] quit".to_string(), "[l] local changes".to_string()];
+    let specific = region.instructions();
     if !specific.is_empty() {
-        text.push_str("  │  ");
-        text.push_str(&specific.join("  "));
+        text.push("│".to_string());
+        text.extend(specific.into_iter().map(|s| s.to_string()));
     }
 
-    Line::from(Span::styled(text, Style::default().fg(Color::Yellow)))
+    let hint = text.join("  ");
+    Line::from(Span::styled(hint, Style::default().fg(Color::Yellow)))
 }
 
 fn clean_badge(status: &RepoStatus) -> Span<'static> {
@@ -160,18 +146,22 @@ mod tests {
             FileChange {
                 path: "a".into(),
                 change: ChangeType::Added,
+                staged: false,
             },
             FileChange {
                 path: "b".into(),
                 change: ChangeType::Added,
+                staged: false,
             },
             FileChange {
                 path: "c".into(),
                 change: ChangeType::Renamed,
+                staged: false,
             },
             FileChange {
                 path: "d".into(),
                 change: ChangeType::Unknown,
+                staged: false,
             },
         ];
 
@@ -200,10 +190,12 @@ mod tests {
                 FileChange {
                     path: "a".into(),
                     change: ChangeType::Added,
+                    staged: false,
                 },
                 FileChange {
                     path: "b".into(),
                     change: ChangeType::Untracked,
+                    staged: false,
                 },
             ],
             ..RepoStatus::default()

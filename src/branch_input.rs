@@ -48,16 +48,10 @@ impl BranchInput {
     }
 
     fn can_insert_dash(&self) -> bool {
-        let prev_is_dash = self
-            .value
-            .get(..self.cursor)
-            .and_then(|s| s.chars().last())
-            == Some('-');
-        let next_is_dash = self
-            .value
-            .get(self.cursor..)
-            .and_then(|s| s.chars().next())
-            == Some('-');
+        let prev_is_dash =
+            self.value.get(..self.cursor).and_then(|s| s.chars().last()) == Some('-');
+        let next_is_dash =
+            self.value.get(self.cursor..).and_then(|s| s.chars().next()) == Some('-');
         !prev_is_dash && !next_is_dash
     }
 
@@ -125,14 +119,12 @@ pub fn render_branch_popup(area: Rect, buf: &mut ratatui::buffer::Buffer, input:
         .alignment(Alignment::Left)
         .block(
             Block::default()
-                .title(
-                    Line::from(Span::styled(
-                        "Create Branch",
-                        Style::default()
-                            .fg(Color::Green)
-                            .add_modifier(Modifier::BOLD),
-                    )),
-                )
+                .title(Line::from(Span::styled(
+                    "Create Branch",
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD),
+                )))
                 .title_bottom(Line::from(vec![
                     Span::styled(
                         "[Enter] Create",

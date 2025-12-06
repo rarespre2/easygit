@@ -25,6 +25,23 @@ impl Region {
         }
     }
 
+    pub fn instructions(&self) -> Vec<&'static str> {
+        match self {
+            Region::Branches => vec![
+                "[↑↓] move",
+                "[Enter] checkout",
+                "[u] update",
+                "[p] push",
+                "[a] add",
+                "[x] delete",
+            ],
+            Region::Commits => vec!["[↑↓] move"],
+            Region::Changes => vec!["[↑↓] move", "[Enter] stage/unstage", "[x] discard"],
+            Region::CommitMessage => vec!["[Enter] commit", "[Esc] stop"],
+            Region::Details | Region::Stashes | Region::ChangeViewer => Vec::new(),
+        }
+    }
+
     pub fn color(&self, is_selected: bool) -> Color {
         if is_selected {
             Color::Green
