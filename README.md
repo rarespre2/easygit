@@ -23,9 +23,9 @@ cargo run
 
 ## Install via npm (prebuilt binary)
 ```bash
-npx easygit
+npx easygit-tui
 # or install globally
-npm i -g easygit
+npm i -g easygit-tui
 easygit
 ```
 

@@ -4,9 +4,9 @@ This package bundles a small launcher and installs the prebuilt `easygit` binary
 
 ## Install
 ```bash
-npx easygit
+npx easygit-tui
 # or
-npm i -g easygit
+npm i -g easygit-tui
 easygit
 ```
 

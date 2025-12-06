@@ -1,5 +1,5 @@
 {
-  "name": "easygit",
+  "name": "easygit-tui",
   "version": "0.1.0",
   "description": "Rust terminal UI for exploring Git concepts without leaving your shell.",
   "bin": "bin/easygit.js",
