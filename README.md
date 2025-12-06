@@ -21,15 +21,6 @@ easygit is a Rust terminal UI for exploring Git concepts without leaving your sh
 cargo run
 ```
 
-### Install via npm (MVP)
-After we publish the npm package, you’ll be able to launch the TUI with:
-```bash
-npx easygit
-# or install globally
-npm i -g easygit
-easygit
-```
-
 ## Development
 - Format and lint: `cargo fmt` and `cargo clippy --all-targets --all-features`
 - Tests: `cargo test`
