@@ -1,0 +1,96 @@
+name: release-binaries
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+env:
+  BIN_NAME: easygit
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x64
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            archive_platform: linux
+            archive_arch: x64
+            archive_ext: tar.gz
+            bin_suffix: ""
+          - name: macos-arm64
+            os: macos-14
+            target: aarch64-apple-darwin
+            archive_platform: macos
+            archive_arch: arm64
+            archive_ext: tar.gz
+            bin_suffix: ""
+          - name: macos-x64
+            os: macos-13
+            target: x86_64-apple-darwin
+            archive_platform: macos
+            archive_arch: x64
+            archive_ext: tar.gz
+            bin_suffix: ""
+          - name: windows-x64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            archive_platform: windows
+            archive_arch: x64
+            archive_ext: zip
+            bin_suffix: ".exe"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Build release binary
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Package archive (tar.gz)
+        if: runner.os != 'Windows'
+        env:
+          ARCHIVE_NAME: easygit-${{ matrix.archive_platform }}-${{ matrix.archive_arch }}.${{ matrix.archive_ext }}
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          bin_path=target/${{ matrix.target }}/release/${{ env.BIN_NAME }}${{ matrix.bin_suffix }}
+          cp "$bin_path" artifacts/${{ env.BIN_NAME }}
+          (cd artifacts && tar -czf "$ARCHIVE_NAME" "${{ env.BIN_NAME }}")
+          rm artifacts/${{ env.BIN_NAME }}
+
+      - name: Package archive (zip)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          ARCHIVE_NAME: easygit-${{ matrix.archive_platform }}-${{ matrix.archive_arch }}.${{ matrix.archive_ext }}
+        run: |
+          $BinPath = "target/${{ matrix.target }}/release/${{ env:BIN_NAME }}${{ matrix.bin_suffix }}"
+          New-Item -ItemType Directory -Force -Path artifacts | Out-Null
+          Copy-Item $BinPath "artifacts/${{ env:BIN_NAME }}${{ matrix.bin_suffix }}" -Force
+          Compress-Archive -Path "artifacts/${{ env:BIN_NAME }}${{ matrix.bin_suffix }}" -DestinationPath "artifacts/$($env:ARCHIVE_NAME)" -Force
+          Remove-Item "artifacts/${{ env:BIN_NAME }}${{ matrix.bin_suffix }}" -Force
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: easygit-${{ matrix.archive_platform }}-${{ matrix.archive_arch }}
+          path: artifacts/easygit-${{ matrix.archive_platform }}-${{ matrix.archive_arch }}.${{ matrix.archive_ext }}
+          if-no-files-found: error
+
+      - name: Upload to GitHub release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v1
+        with:
+          files: artifacts/easygit-${{ matrix.archive_platform }}-${{ matrix.archive_arch }}.${{ matrix.archive_ext }}

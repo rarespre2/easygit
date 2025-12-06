@@ -1,0 +1,38 @@
+{
+  "name": "easygit",
+  "version": "0.1.0",
+  "description": "Rust terminal UI for exploring Git concepts without leaving your shell.",
+  "bin": "bin/easygit.js",
+  "scripts": {
+    "postinstall": "node scripts/postinstall.js"
+  },
+  "os": [
+    "darwin",
+    "linux",
+    "win32"
+  ],
+  "cpu": [
+    "x64",
+    "arm64"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/rarespredoi/easygit"
+  },
+  "keywords": [
+    "git",
+    "tui",
+    "rust",
+    "ratatui",
+    "crossterm"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=16"
+  },
+  "files": [
+    "bin",
+    "scripts",
+    "README.md"
+  ]
+}

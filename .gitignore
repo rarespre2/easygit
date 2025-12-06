@@ -1,3 +1,7 @@
 /target
 .codex/
 AGENTS.md
+/npm/bin/easygit
+/npm/bin/easygit.exe
+/npm/bin/*.tar.gz
+/npm/bin/*.zip
