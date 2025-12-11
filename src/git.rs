@@ -12,6 +12,8 @@ pub struct BranchSummary {
     pub name: String,
     pub ahead: Option<usize>,
     pub behind: Option<usize>,
+    pub is_remote: bool,
+    pub remote_ref: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -95,6 +97,49 @@ pub fn checkout_branch_in(path: impl AsRef<Path>, branch: &str) -> Result<(), St
         Ok(())
     } else {
         Err(format!("git checkout exited with status: {status}"))
+    }
+}
+
+pub fn checkout_remote_branch(remote_branch: &str) -> Result<String, String> {
+    checkout_remote_branch_in(".", remote_branch)
+}
+
+pub fn checkout_remote_branch_in(
+    path: impl AsRef<Path>,
+    remote_branch: &str,
+) -> Result<String, String> {
+    let mut parts = remote_branch.splitn(2, '/');
+    let remote = parts.next().unwrap_or_default();
+    let branch = parts
+        .next()
+        .filter(|name| !name.trim().is_empty())
+        .ok_or_else(|| "Invalid remote branch name".to_string())?;
+
+    let output = std::process::Command::new("git")
+        .arg("checkout")
+        .arg("--track")
+        .arg(remote_branch)
+        .current_dir(path.as_ref())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .map_err(|err| format!("Failed to run git checkout --track: {err}"))?;
+
+    if output.status.success() {
+        Ok(branch.to_string())
+    } else {
+        let message = String::from_utf8_lossy(&output.stderr);
+        let trimmed = message.trim();
+        if trimmed.is_empty() {
+            Err(format!(
+                "git checkout --track exited with status: {}",
+                output.status
+            ))
+        } else {
+            Err(format!(
+                "Failed to check out {remote_branch} from {remote}: {trimmed}"
+            ))
+        }
     }
 }
 
@@ -269,6 +314,34 @@ pub fn delete_branch_in(path: impl AsRef<Path>, branch: &str) -> Result<(), Stri
             ))
         } else {
             Err(format!("Failed to delete branch {branch}: {trimmed}"))
+        }
+    }
+}
+
+pub fn fetch_remotes() -> Result<(), String> {
+    fetch_remotes_in(".")
+}
+
+pub fn fetch_remotes_in(path: impl AsRef<Path>) -> Result<(), String> {
+    let output = std::process::Command::new("git")
+        .arg("fetch")
+        .arg("--all")
+        .arg("--prune")
+        .current_dir(path.as_ref())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .map_err(|err| format!("Failed to run git fetch: {err}"))?;
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        let message = String::from_utf8_lossy(&output.stderr);
+        let trimmed = message.trim();
+        if trimmed.is_empty() {
+            Err(format!("git fetch exited with status: {}", output.status))
+        } else {
+            Err(format!("Fetch failed: {trimmed}"))
         }
     }
 }
@@ -827,23 +900,62 @@ fn try_fetch_branch_info(path: impl AsRef<Path>) -> Result<BranchInfo, String> {
         .referent_name()
         .map(|name| name.shorten().to_string());
 
-    let mut branches: Vec<BranchSummary> = repo
+    let mut locals = std::collections::HashMap::new();
+    for reference in repo
         .references()
         .map_err(|err| format!("Failed to list references: {err}"))?
         .prefixed("refs/heads/")
         .map_err(|err| format!("Failed to filter branches: {err}"))?
-        .filter_map(|reference| {
-            reference.ok().map(|r| BranchSummary {
-                name: r.name().shorten().to_string(),
+    {
+        if let Ok(r) = reference {
+            let name = r.name().shorten().to_string();
+            locals.entry(name.clone()).or_insert(BranchSummary {
+                name,
                 ahead: None,
                 behind: None,
-            })
-        })
+                is_remote: false,
+                remote_ref: None,
+            });
+        }
+    }
+
+    let mut remotes = std::collections::HashMap::new();
+    for reference in repo
+        .references()
+        .map_err(|err| format!("Failed to list references: {err}"))?
+        .prefixed("refs/remotes/")
+        .map_err(|err| format!("Failed to filter remote branches: {err}"))?
+    {
+        if let Ok(r) = reference {
+            let full = r.name().shorten().to_string();
+            if full.ends_with("/HEAD") {
+                continue;
+            }
+            if let Some((_, short)) = full.split_once('/') {
+                if !locals.contains_key(short) {
+                    remotes.entry(short.to_string()).or_insert(BranchSummary {
+                        name: short.to_string(),
+                        ahead: None,
+                        behind: None,
+                        is_remote: true,
+                        remote_ref: Some(full),
+                    });
+                }
+            }
+        }
+    }
+
+    let mut branches: Vec<BranchSummary> = locals
+        .into_values()
+        .chain(remotes.into_values())
         .collect();
 
-    branches.sort();
+    branches.sort_by(|a, b| a.name.cmp(&b.name).then(a.is_remote.cmp(&b.is_remote)));
     let default_branch = find_main_branch_in(path);
     for branch in branches.iter_mut() {
+        if branch.is_remote {
+            continue;
+        }
         if let Some((ahead, behind)) =
             branch_ahead_behind(path, &branch.name, default_branch.as_deref())
         {
@@ -887,6 +999,36 @@ mod tests {
             branch_names(&info),
             vec!["feature".to_string(), "main".to_string()]
         );
+    }
+
+    #[test]
+    fn fetch_lists_remote_branches_after_fetch() {
+        let remote = create_bare_repo().unwrap();
+
+        let source = TestRepo::init().unwrap();
+        source.write_file("file.txt", "base").unwrap();
+        source.git(&["add", "."]).unwrap();
+        source.git(&["commit", "-m", "init"]).unwrap();
+        source.add_remote("origin", &remote).unwrap();
+        source.git(&["checkout", "-b", "feature"]).unwrap();
+        source.write_file("file.txt", "feature work").unwrap();
+        source.git(&["add", "."]).unwrap();
+        source.git(&["commit", "-m", "feature"]).unwrap();
+        source.git(&["push", "origin", "feature"]).unwrap();
+
+        let fetch_repo = TestRepo::init().unwrap();
+        fetch_repo.add_remote("origin", &remote).unwrap();
+        fetch_remotes_in(fetch_repo.path()).unwrap();
+        let info = fetch_branch_info_in(fetch_repo.path());
+
+        let remote_branch = info
+            .branches
+            .iter()
+            .find(|b| b.is_remote && b.name == "feature")
+            .expect("remote branch");
+        assert_eq!(remote_branch.remote_ref.as_deref(), Some("origin/feature"));
+
+        let _ = std::fs::remove_dir_all(remote);
     }
 
     #[test]
