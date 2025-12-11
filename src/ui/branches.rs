@@ -112,7 +112,11 @@ fn checkout_hovered(info: &mut BranchInfo) -> Option<String> {
     if let Some(index) = info.hovered {
         if let Some(branch) = info.branches.get(index).cloned() {
             let checkout_result = if branch.is_remote {
-                git::checkout_remote_branch(&branch.name)
+                if let Some(remote_ref) = branch.remote_ref.as_ref() {
+                    git::checkout_remote_branch(remote_ref)
+                } else {
+                    return Some("Missing remote reference".to_string());
+                }
             } else {
                 git::checkout_branch(&branch.name).map(|_| branch.name.clone())
             };
@@ -305,8 +309,6 @@ impl Widget for BranchList<'_> {
                         .add_modifier(Modifier::BOLD)
                 } else if is_selected {
                     Style::default().add_modifier(Modifier::UNDERLINED)
-                } else if branch.is_remote {
-                    Style::default().fg(Color::Cyan)
                 } else {
                     Style::default()
                 };
@@ -362,9 +364,6 @@ fn truncate_with_ellipsis(text: &str, max_width: usize) -> String {
 }
 
 fn format_indicator(branch: &BranchSummary) -> String {
-    if branch.is_remote {
-        return String::new();
-    }
     let ahead = branch.ahead.unwrap_or(0);
     let behind = branch.behind.unwrap_or(0);
     format!("↑{ahead} ↓{behind}")
@@ -383,6 +382,7 @@ mod tests {
                     ahead: None,
                     behind: None,
                     is_remote: false,
+                    remote_ref: None,
                 })
                 .collect(),
             current: current.map(str::to_string),
@@ -409,6 +409,7 @@ mod tests {
             ahead: Some(2),
             behind: Some(1),
             is_remote: false,
+            remote_ref: None,
         };
         assert_eq!(format_indicator(&branch), "↑2 ↓1");
 
@@ -422,14 +423,15 @@ mod tests {
     }
 
     #[test]
-    fn indicator_is_empty_for_remote_branch() {
+    fn indicator_defaults_for_remote_branch() {
         let branch = BranchSummary {
             name: "origin/feature".into(),
             ahead: Some(1),
             behind: Some(1),
             is_remote: true,
+            remote_ref: Some("origin/feature".into()),
         };
-        assert_eq!(format_indicator(&branch), "");
+        assert_eq!(format_indicator(&branch), "↑1 ↓1");
     }
 
     #[test]

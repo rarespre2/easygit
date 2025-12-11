@@ -13,6 +13,7 @@ pub struct BranchSummary {
     pub ahead: Option<usize>,
     pub behind: Option<usize>,
     pub is_remote: bool,
+    pub remote_ref: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -899,48 +900,57 @@ fn try_fetch_branch_info(path: impl AsRef<Path>) -> Result<BranchInfo, String> {
         .referent_name()
         .map(|name| name.shorten().to_string());
 
-    let local_branches: Vec<BranchSummary> = repo
+    let mut locals = std::collections::HashMap::new();
+    for reference in repo
         .references()
         .map_err(|err| format!("Failed to list references: {err}"))?
         .prefixed("refs/heads/")
         .map_err(|err| format!("Failed to filter branches: {err}"))?
-        .filter_map(|reference| {
-            reference.ok().map(|r| BranchSummary {
-                name: r.name().shorten().to_string(),
+    {
+        if let Ok(r) = reference {
+            let name = r.name().shorten().to_string();
+            locals.entry(name.clone()).or_insert(BranchSummary {
+                name,
                 ahead: None,
                 behind: None,
                 is_remote: false,
-            })
-        })
-        .collect();
+                remote_ref: None,
+            });
+        }
+    }
 
-    let remote_branches: Vec<BranchSummary> = repo
+    let mut remotes = std::collections::HashMap::new();
+    for reference in repo
         .references()
         .map_err(|err| format!("Failed to list references: {err}"))?
         .prefixed("refs/remotes/")
         .map_err(|err| format!("Failed to filter remote branches: {err}"))?
-        .filter_map(|reference| {
-            reference.ok().and_then(|r| {
-                let name = r.name().shorten().to_string();
-                if name.ends_with("/HEAD") {
-                    None
-                } else {
-                    Some(BranchSummary {
-                        name,
+    {
+        if let Ok(r) = reference {
+            let full = r.name().shorten().to_string();
+            if full.ends_with("/HEAD") {
+                continue;
+            }
+            if let Some((_, short)) = full.split_once('/') {
+                if !locals.contains_key(short) {
+                    remotes.entry(short.to_string()).or_insert(BranchSummary {
+                        name: short.to_string(),
                         ahead: None,
                         behind: None,
                         is_remote: true,
-                    })
+                        remote_ref: Some(full),
+                    });
                 }
-            })
-        })
+            }
+        }
+    }
+
+    let mut branches: Vec<BranchSummary> = locals
+        .into_values()
+        .chain(remotes.into_values())
         .collect();
 
-    let mut branches: Vec<BranchSummary> = Vec::new();
-    branches.extend(local_branches);
-    branches.extend(remote_branches);
-
-    branches.sort_by(|a, b| (a.is_remote, &a.name).cmp(&(b.is_remote, &b.name)));
+    branches.sort_by(|a, b| a.name.cmp(&b.name).then(a.is_remote.cmp(&b.is_remote)));
     let default_branch = find_main_branch_in(path);
     for branch in branches.iter_mut() {
         if branch.is_remote {
@@ -1011,11 +1021,12 @@ mod tests {
         fetch_remotes_in(fetch_repo.path()).unwrap();
         let info = fetch_branch_info_in(fetch_repo.path());
 
-        assert!(
-            info.branches
-                .iter()
-                .any(|b| b.is_remote && b.name == "origin/feature")
-        );
+        let remote_branch = info
+            .branches
+            .iter()
+            .find(|b| b.is_remote && b.name == "feature")
+            .expect("remote branch");
+        assert_eq!(remote_branch.remote_ref.as_deref(), Some("origin/feature"));
 
         let _ = std::fs::remove_dir_all(remote);
     }
