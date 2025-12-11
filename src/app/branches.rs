@@ -31,8 +31,23 @@ impl App {
 
         if let Some(message) = match code {
             KeyCode::Char('a') => {
-                self.start_branch_input();
-                None
+                if self.selected_branch.branches.is_empty() {
+                    let mut previous = std::mem::take(&mut self.selected_branch);
+                    let result = git::rename_current_branch("main");
+                    let message = match result {
+                        Ok(()) => {
+                            previous.selected = Some("main".to_string());
+                            previous.current = Some("main".to_string());
+                            "Renamed current branch to main".to_string()
+                        }
+                        Err(err) => format!("Failed to rename branch: {err}"),
+                    };
+                    self.selected_branch = branches::refresh(previous);
+                    Some(message)
+                } else {
+                    self.start_branch_input();
+                    None
+                }
             }
             KeyCode::Up
             | KeyCode::Down

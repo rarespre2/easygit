@@ -273,6 +273,41 @@ pub fn delete_branch_in(path: impl AsRef<Path>, branch: &str) -> Result<(), Stri
     }
 }
 
+pub fn rename_current_branch(new_name: &str) -> Result<(), String> {
+    rename_current_branch_in(".", new_name)
+}
+
+pub fn rename_current_branch_in(path: impl AsRef<Path>, new_name: &str) -> Result<(), String> {
+    if new_name.trim().is_empty() {
+        return Err("Branch name cannot be empty".to_string());
+    }
+
+    let output = std::process::Command::new("git")
+        .arg("branch")
+        .arg("-M")
+        .arg(new_name)
+        .current_dir(path.as_ref())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .map_err(|err| format!("Failed to run git branch -M: {err}"))?;
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        let message = String::from_utf8_lossy(&output.stderr);
+        let trimmed = message.trim();
+        if trimmed.is_empty() {
+            Err(format!(
+                "git branch -M exited with status: {}",
+                output.status
+            ))
+        } else {
+            Err(format!("Failed to rename current branch: {trimmed}"))
+        }
+    }
+}
+
 pub fn pull_current_branch() -> Result<(), String> {
     pull_current_branch_in(".")
 }
