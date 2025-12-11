@@ -12,6 +12,7 @@ pub struct BranchSummary {
     pub name: String,
     pub ahead: Option<usize>,
     pub behind: Option<usize>,
+    pub is_remote: bool,
 }
 
 #[derive(Debug, Default)]
@@ -95,6 +96,49 @@ pub fn checkout_branch_in(path: impl AsRef<Path>, branch: &str) -> Result<(), St
         Ok(())
     } else {
         Err(format!("git checkout exited with status: {status}"))
+    }
+}
+
+pub fn checkout_remote_branch(remote_branch: &str) -> Result<String, String> {
+    checkout_remote_branch_in(".", remote_branch)
+}
+
+pub fn checkout_remote_branch_in(
+    path: impl AsRef<Path>,
+    remote_branch: &str,
+) -> Result<String, String> {
+    let mut parts = remote_branch.splitn(2, '/');
+    let remote = parts.next().unwrap_or_default();
+    let branch = parts
+        .next()
+        .filter(|name| !name.trim().is_empty())
+        .ok_or_else(|| "Invalid remote branch name".to_string())?;
+
+    let output = std::process::Command::new("git")
+        .arg("checkout")
+        .arg("--track")
+        .arg(remote_branch)
+        .current_dir(path.as_ref())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .map_err(|err| format!("Failed to run git checkout --track: {err}"))?;
+
+    if output.status.success() {
+        Ok(branch.to_string())
+    } else {
+        let message = String::from_utf8_lossy(&output.stderr);
+        let trimmed = message.trim();
+        if trimmed.is_empty() {
+            Err(format!(
+                "git checkout --track exited with status: {}",
+                output.status
+            ))
+        } else {
+            Err(format!(
+                "Failed to check out {remote_branch} from {remote}: {trimmed}"
+            ))
+        }
     }
 }
 
@@ -269,6 +313,34 @@ pub fn delete_branch_in(path: impl AsRef<Path>, branch: &str) -> Result<(), Stri
             ))
         } else {
             Err(format!("Failed to delete branch {branch}: {trimmed}"))
+        }
+    }
+}
+
+pub fn fetch_remotes() -> Result<(), String> {
+    fetch_remotes_in(".")
+}
+
+pub fn fetch_remotes_in(path: impl AsRef<Path>) -> Result<(), String> {
+    let output = std::process::Command::new("git")
+        .arg("fetch")
+        .arg("--all")
+        .arg("--prune")
+        .current_dir(path.as_ref())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .map_err(|err| format!("Failed to run git fetch: {err}"))?;
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        let message = String::from_utf8_lossy(&output.stderr);
+        let trimmed = message.trim();
+        if trimmed.is_empty() {
+            Err(format!("git fetch exited with status: {}", output.status))
+        } else {
+            Err(format!("Fetch failed: {trimmed}"))
         }
     }
 }
@@ -827,7 +899,7 @@ fn try_fetch_branch_info(path: impl AsRef<Path>) -> Result<BranchInfo, String> {
         .referent_name()
         .map(|name| name.shorten().to_string());
 
-    let mut branches: Vec<BranchSummary> = repo
+    let local_branches: Vec<BranchSummary> = repo
         .references()
         .map_err(|err| format!("Failed to list references: {err}"))?
         .prefixed("refs/heads/")
@@ -837,13 +909,43 @@ fn try_fetch_branch_info(path: impl AsRef<Path>) -> Result<BranchInfo, String> {
                 name: r.name().shorten().to_string(),
                 ahead: None,
                 behind: None,
+                is_remote: false,
             })
         })
         .collect();
 
-    branches.sort();
+    let remote_branches: Vec<BranchSummary> = repo
+        .references()
+        .map_err(|err| format!("Failed to list references: {err}"))?
+        .prefixed("refs/remotes/")
+        .map_err(|err| format!("Failed to filter remote branches: {err}"))?
+        .filter_map(|reference| {
+            reference.ok().and_then(|r| {
+                let name = r.name().shorten().to_string();
+                if name.ends_with("/HEAD") {
+                    None
+                } else {
+                    Some(BranchSummary {
+                        name,
+                        ahead: None,
+                        behind: None,
+                        is_remote: true,
+                    })
+                }
+            })
+        })
+        .collect();
+
+    let mut branches: Vec<BranchSummary> = Vec::new();
+    branches.extend(local_branches);
+    branches.extend(remote_branches);
+
+    branches.sort_by(|a, b| (a.is_remote, &a.name).cmp(&(b.is_remote, &b.name)));
     let default_branch = find_main_branch_in(path);
     for branch in branches.iter_mut() {
+        if branch.is_remote {
+            continue;
+        }
         if let Some((ahead, behind)) =
             branch_ahead_behind(path, &branch.name, default_branch.as_deref())
         {
@@ -887,6 +989,35 @@ mod tests {
             branch_names(&info),
             vec!["feature".to_string(), "main".to_string()]
         );
+    }
+
+    #[test]
+    fn fetch_lists_remote_branches_after_fetch() {
+        let remote = create_bare_repo().unwrap();
+
+        let source = TestRepo::init().unwrap();
+        source.write_file("file.txt", "base").unwrap();
+        source.git(&["add", "."]).unwrap();
+        source.git(&["commit", "-m", "init"]).unwrap();
+        source.add_remote("origin", &remote).unwrap();
+        source.git(&["checkout", "-b", "feature"]).unwrap();
+        source.write_file("file.txt", "feature work").unwrap();
+        source.git(&["add", "."]).unwrap();
+        source.git(&["commit", "-m", "feature"]).unwrap();
+        source.git(&["push", "origin", "feature"]).unwrap();
+
+        let fetch_repo = TestRepo::init().unwrap();
+        fetch_repo.add_remote("origin", &remote).unwrap();
+        fetch_remotes_in(fetch_repo.path()).unwrap();
+        let info = fetch_branch_info_in(fetch_repo.path());
+
+        assert!(
+            info.branches
+                .iter()
+                .any(|b| b.is_remote && b.name == "origin/feature")
+        );
+
+        let _ = std::fs::remove_dir_all(remote);
     }
 
     #[test]

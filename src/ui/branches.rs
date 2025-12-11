@@ -68,7 +68,7 @@ pub fn handle_key(info: &mut BranchInfo, key: KeyCode) -> Option<String> {
         }
         KeyCode::Enter => checkout_hovered(info),
         KeyCode::Char('x') | KeyCode::Delete => delete_hovered(info),
-        KeyCode::Char('u') => pull_current_branch(info),
+        KeyCode::Char('u') => update_branches(info),
         KeyCode::Char('p') => push_current_branch(info),
         _ => None,
     }
@@ -111,21 +111,24 @@ fn move_hover_down(info: &mut BranchInfo) {
 fn checkout_hovered(info: &mut BranchInfo) -> Option<String> {
     if let Some(index) = info.hovered {
         if let Some(branch) = info.branches.get(index).cloned() {
-            match git::checkout_branch(&branch.name) {
-                Ok(()) => {
+            let checkout_result = if branch.is_remote {
+                git::checkout_remote_branch(&branch.name)
+            } else {
+                git::checkout_branch(&branch.name).map(|_| branch.name.clone())
+            };
+
+            match checkout_result {
+                Ok(_) => {
                     let previous = std::mem::take(info);
                     let mut refreshed = refresh(previous);
-                    refreshed.selected = Some(branch.name.clone());
-                    refreshed.current = Some(branch.name);
+                    refreshed.selected = refreshed.current.clone();
                     *info = refreshed;
                     return info
                         .current
                         .as_ref()
                         .map(|name| format!("Switched to {name}"));
                 }
-                Err(err) => {
-                    return Some(format!("Checkout failed: {err}"));
-                }
+                Err(err) => return Some(format!("Checkout failed: {err}")),
             }
         }
     }
@@ -136,6 +139,10 @@ fn checkout_hovered(info: &mut BranchInfo) -> Option<String> {
 fn delete_hovered(info: &mut BranchInfo) -> Option<String> {
     if let Some(index) = info.hovered {
         if let Some(branch) = info.branches.get(index).cloned() {
+            if branch.is_remote {
+                return Some("Cannot delete remote branches".to_string());
+            }
+
             if info.current.as_deref() == Some(branch.name.as_str()) {
                 return Some("Cannot delete the current branch".to_string());
             }
@@ -154,6 +161,23 @@ fn delete_hovered(info: &mut BranchInfo) -> Option<String> {
     }
 
     None
+}
+
+fn update_branches(info: &mut BranchInfo) -> Option<String> {
+    let fetch_result = git::fetch_remotes();
+    let mut previous = mem::take(info);
+    previous.status = None;
+    *info = refresh(previous);
+
+    if let Err(err) = fetch_result {
+        return Some(err);
+    }
+
+    if info.current.is_some() {
+        pull_current_branch(info)
+    } else {
+        Some("Fetched remote branches".to_string())
+    }
 }
 
 fn pull_current_branch(info: &mut BranchInfo) -> Option<String> {
@@ -275,16 +299,18 @@ impl Widget for BranchList<'_> {
                     spans.push(Span::raw(indicator));
                 }
 
-                let style = if is_current {
+                let base_style = if is_current {
                     Style::default()
                         .fg(Color::Green)
                         .add_modifier(Modifier::BOLD)
                 } else if is_selected {
                     Style::default().add_modifier(Modifier::UNDERLINED)
+                } else if branch.is_remote {
+                    Style::default().fg(Color::Cyan)
                 } else {
                     Style::default()
-                }
-                .add_modifier(if is_hovered {
+                };
+                let style = base_style.add_modifier(if is_hovered {
                     Modifier::REVERSED
                 } else {
                     Modifier::empty()
@@ -336,6 +362,9 @@ fn truncate_with_ellipsis(text: &str, max_width: usize) -> String {
 }
 
 fn format_indicator(branch: &BranchSummary) -> String {
+    if branch.is_remote {
+        return String::new();
+    }
     let ahead = branch.ahead.unwrap_or(0);
     let behind = branch.behind.unwrap_or(0);
     format!("↑{ahead} ↓{behind}")
@@ -353,6 +382,7 @@ mod tests {
                     name: (*name).to_string(),
                     ahead: None,
                     behind: None,
+                    is_remote: false,
                 })
                 .collect(),
             current: current.map(str::to_string),
@@ -378,6 +408,7 @@ mod tests {
             name: "feature".into(),
             ahead: Some(2),
             behind: Some(1),
+            is_remote: false,
         };
         assert_eq!(format_indicator(&branch), "↑2 ↓1");
 
@@ -388,6 +419,17 @@ mod tests {
         branch.ahead = None;
         branch.behind = None;
         assert_eq!(format_indicator(&branch), "↑0 ↓0");
+    }
+
+    #[test]
+    fn indicator_is_empty_for_remote_branch() {
+        let branch = BranchSummary {
+            name: "origin/feature".into(),
+            ahead: Some(1),
+            behind: Some(1),
+            is_remote: true,
+        };
+        assert_eq!(format_indicator(&branch), "");
     }
 
     #[test]
