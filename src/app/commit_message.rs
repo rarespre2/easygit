@@ -22,6 +22,7 @@ impl App {
                         self.refresh_commits();
                         self.show_notification(format!("Committed: {summary}"));
                         self.commit_message_editing = false;
+                        self.show_changes_popup = false;
                     }
                     Err(err) => self.show_notification(err),
                 }

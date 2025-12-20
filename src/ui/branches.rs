@@ -111,14 +111,16 @@ fn move_hover_down(info: &mut BranchInfo) {
 fn checkout_hovered(info: &mut BranchInfo) -> Option<String> {
     if let Some(index) = info.hovered {
         if let Some(branch) = info.branches.get(index).cloned() {
-            let checkout_result = if branch.is_remote {
+            let checkout_result = if branch.has_local {
+                git::checkout_branch(&branch.name).map(|_| branch.name.clone())
+            } else if branch.has_remote {
                 if let Some(remote_ref) = branch.remote_ref.as_ref() {
                     git::checkout_remote_branch(remote_ref)
                 } else {
                     return Some("Missing remote reference".to_string());
                 }
             } else {
-                git::checkout_branch(&branch.name).map(|_| branch.name.clone())
+                return Some("Missing branch reference".to_string());
             };
 
             match checkout_result {
@@ -143,8 +145,65 @@ fn checkout_hovered(info: &mut BranchInfo) -> Option<String> {
 fn delete_hovered(info: &mut BranchInfo) -> Option<String> {
     if let Some(index) = info.hovered {
         if let Some(branch) = info.branches.get(index).cloned() {
-            if branch.is_remote {
-                return Some("Cannot delete remote branches".to_string());
+            if branch.has_remote {
+                let (remote_ref, local_name) = if let Some(remote_ref) = branch.remote_ref.as_deref()
+                {
+                    let Some((_, local_name)) = split_remote_ref(remote_ref) else {
+                        return Some("Invalid remote branch name".to_string());
+                    };
+                    (Some(remote_ref), local_name)
+                } else {
+                    (None, branch.name.as_str())
+                };
+                let remote_label = remote_ref.unwrap_or("remote");
+
+                if info.current.as_deref() == Some(local_name) {
+                    return Some("Cannot delete the current branch".to_string());
+                }
+
+                let mut remote_missing = false;
+                if let Some(remote_ref) = remote_ref {
+                    if let Err(err) = git::delete_remote_branch(remote_ref) {
+                        let err_lower = err.to_lowercase();
+                        remote_missing = err_lower.contains("remote ref does not exist");
+                        if !remote_missing {
+                            return Some(format!("Delete failed: {err}"));
+                        }
+                    }
+                    let _ = git::delete_remote_tracking_ref(remote_ref);
+                } else {
+                    remote_missing = true;
+                }
+
+                let mut deleted_local = false;
+                let has_local = branch.has_local || git::local_branch_exists(local_name);
+                if has_local {
+                    if let Err(err) = git::delete_branch(local_name) {
+                        return Some(format!(
+                            "Deleted {remote_label}, but failed to delete {local_name}: {err}"
+                        ));
+                    }
+                    deleted_local = true;
+                }
+
+                let previous = std::mem::take(info);
+                *info = refresh(previous);
+                if remote_missing {
+                    if deleted_local {
+                        return Some(format!("Remote already gone; deleted {local_name}"));
+                    }
+                    return Some("Remote already gone".to_string());
+                }
+                if deleted_local {
+                    if let Some(_) = remote_ref {
+                        return Some(format!("Deleted {remote_label} and {local_name}"));
+                    }
+                    return Some(format!("Deleted {local_name}"));
+                }
+                if let Some(_) = remote_ref {
+                    return Some(format!("Deleted {remote_label}"));
+                }
+                return Some(format!("Deleted {local_name}"));
             }
 
             if info.current.as_deref() == Some(branch.name.as_str()) {
@@ -165,6 +224,16 @@ fn delete_hovered(info: &mut BranchInfo) -> Option<String> {
     }
 
     None
+}
+
+fn split_remote_ref(remote_ref: &str) -> Option<(&str, &str)> {
+    let mut parts = remote_ref.splitn(2, '/');
+    let remote = parts.next()?;
+    let branch = parts.next()?;
+    if remote.trim().is_empty() || branch.trim().is_empty() {
+        return None;
+    }
+    Some((remote, branch))
 }
 
 fn update_branches(info: &mut BranchInfo) -> Option<String> {
@@ -381,7 +450,8 @@ mod tests {
                     name: (*name).to_string(),
                     ahead: None,
                     behind: None,
-                    is_remote: false,
+                    has_local: true,
+                    has_remote: false,
                     remote_ref: None,
                 })
                 .collect(),
@@ -408,7 +478,8 @@ mod tests {
             name: "feature".into(),
             ahead: Some(2),
             behind: Some(1),
-            is_remote: false,
+            has_local: true,
+            has_remote: false,
             remote_ref: None,
         };
         assert_eq!(format_indicator(&branch), "↑2 ↓1");
@@ -425,10 +496,11 @@ mod tests {
     #[test]
     fn indicator_defaults_for_remote_branch() {
         let branch = BranchSummary {
-            name: "origin/feature".into(),
+            name: "feature".into(),
             ahead: Some(1),
             behind: Some(1),
-            is_remote: true,
+            has_local: false,
+            has_remote: true,
             remote_ref: Some("origin/feature".into()),
         };
         assert_eq!(format_indicator(&branch), "↑1 ↓1");
