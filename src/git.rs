@@ -12,7 +12,8 @@ pub struct BranchSummary {
     pub name: String,
     pub ahead: Option<usize>,
     pub behind: Option<usize>,
-    pub is_remote: bool,
+    pub has_local: bool,
+    pub has_remote: bool,
     pub remote_ref: Option<String>,
 }
 
@@ -108,12 +109,7 @@ pub fn checkout_remote_branch_in(
     path: impl AsRef<Path>,
     remote_branch: &str,
 ) -> Result<String, String> {
-    let mut parts = remote_branch.splitn(2, '/');
-    let remote = parts.next().unwrap_or_default();
-    let branch = parts
-        .next()
-        .filter(|name| !name.trim().is_empty())
-        .ok_or_else(|| "Invalid remote branch name".to_string())?;
+    let (remote, branch) = split_remote_ref(remote_branch)?;
 
     let output = std::process::Command::new("git")
         .arg("checkout")
@@ -318,6 +314,65 @@ pub fn delete_branch_in(path: impl AsRef<Path>, branch: &str) -> Result<(), Stri
     }
 }
 
+pub fn delete_remote_branch(remote_ref: &str) -> Result<(), String> {
+    delete_remote_branch_in(".", remote_ref)
+}
+
+pub fn delete_remote_branch_in(path: impl AsRef<Path>, remote_ref: &str) -> Result<(), String> {
+    let (remote, branch) = split_remote_ref(remote_ref)?;
+    let output = std::process::Command::new("git")
+        .arg("push")
+        .arg(remote)
+        .arg("--delete")
+        .arg(branch)
+        .current_dir(path.as_ref())
+        .output()
+        .map_err(|err| format!("Failed to run git push --delete: {err}"))?;
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let message = clean_git_message(stderr.trim());
+        if message.is_empty() {
+            Err(format!("git push --delete exited with status: {}", output.status))
+        } else {
+            Err(message)
+        }
+    }
+}
+
+pub fn delete_remote_tracking_ref(remote_ref: &str) -> Result<(), String> {
+    delete_remote_tracking_ref_in(".", remote_ref)
+}
+
+pub fn delete_remote_tracking_ref_in(
+    path: impl AsRef<Path>,
+    remote_ref: &str,
+) -> Result<(), String> {
+    let output = std::process::Command::new("git")
+        .arg("update-ref")
+        .arg("-d")
+        .arg(format!("refs/remotes/{remote_ref}"))
+        .current_dir(path.as_ref())
+        .output()
+        .map_err(|err| format!("Failed to run git update-ref: {err}"))?;
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let message = clean_git_message(stderr.trim());
+        if message.is_empty() {
+            Err(format!(
+                "git update-ref exited with status: {}",
+                output.status
+            ))
+        } else {
+            Err(message)
+        }
+    }
+}
 pub fn fetch_remotes() -> Result<(), String> {
     fetch_remotes_in(".")
 }
@@ -675,6 +730,14 @@ fn branch_exists_in(path: &Path, branch: &str) -> bool {
         .unwrap_or(false)
 }
 
+pub fn local_branch_exists(branch: &str) -> bool {
+    local_branch_exists_in(".", branch)
+}
+
+pub fn local_branch_exists_in(path: impl AsRef<Path>, branch: &str) -> bool {
+    branch_exists_in(path.as_ref(), branch)
+}
+
 fn branches_containing_commit(path: &Path, full_id: &str) -> Result<Vec<String>, String> {
     let output = std::process::Command::new("git")
         .arg("branch")
@@ -913,7 +976,8 @@ fn try_fetch_branch_info(path: impl AsRef<Path>) -> Result<BranchInfo, String> {
                 name,
                 ahead: None,
                 behind: None,
-                is_remote: false,
+                has_local: true,
+                has_remote: false,
                 remote_ref: None,
             });
         }
@@ -931,29 +995,47 @@ fn try_fetch_branch_info(path: impl AsRef<Path>) -> Result<BranchInfo, String> {
             if full.ends_with("/HEAD") {
                 continue;
             }
-            if let Some((_, short)) = full.split_once('/') {
-                if !locals.contains_key(short) {
-                    remotes.entry(short.to_string()).or_insert(BranchSummary {
-                        name: short.to_string(),
-                        ahead: None,
-                        behind: None,
-                        is_remote: true,
-                        remote_ref: Some(full),
-                    });
-                }
+            let Some((remote, short)) = full.split_once('/') else {
+                continue;
+            };
+            let entry = remotes.entry(short.to_string()).or_insert(BranchSummary {
+                name: short.to_string(),
+                ahead: None,
+                behind: None,
+                has_local: false,
+                has_remote: true,
+                remote_ref: Some(full.clone()),
+            });
+            entry.has_remote = true;
+            if entry.remote_ref.is_none() || remote == "origin" {
+                entry.remote_ref = Some(full.clone());
             }
         }
     }
 
-    let mut branches: Vec<BranchSummary> = locals
-        .into_values()
-        .chain(remotes.into_values())
-        .collect();
+    for (name, remote_branch) in remotes {
+        locals
+            .entry(name)
+            .and_modify(|local| {
+                local.has_remote = true;
+                if local.remote_ref.is_none() || remote_branch
+                    .remote_ref
+                    .as_deref()
+                    .map(|full| full.starts_with("origin/"))
+                    .unwrap_or(false)
+                {
+                    local.remote_ref = remote_branch.remote_ref.clone();
+                }
+            })
+            .or_insert(remote_branch);
+    }
 
-    branches.sort_by(|a, b| a.name.cmp(&b.name).then(a.is_remote.cmp(&b.is_remote)));
+    let mut branches: Vec<BranchSummary> = locals.into_values().collect();
+
+    branches.sort_by(|a, b| a.name.cmp(&b.name));
     let default_branch = find_main_branch_in(path);
     for branch in branches.iter_mut() {
-        if branch.is_remote {
+        if !branch.has_local {
             continue;
         }
         if let Some((ahead, behind)) =
@@ -971,6 +1053,16 @@ fn try_fetch_branch_info(path: impl AsRef<Path>) -> Result<BranchInfo, String> {
         hovered: None,
         selected: None,
     })
+}
+
+fn split_remote_ref(remote_ref: &str) -> Result<(&str, &str), String> {
+    let mut parts = remote_ref.splitn(2, '/');
+    let remote = parts.next().unwrap_or("");
+    let branch = parts.next().unwrap_or("");
+    if remote.trim().is_empty() || branch.trim().is_empty() {
+        return Err("Invalid remote branch name".to_string());
+    }
+    Ok((remote, branch))
 }
 
 #[cfg(test)]
@@ -1024,7 +1116,7 @@ mod tests {
         let remote_branch = info
             .branches
             .iter()
-            .find(|b| b.is_remote && b.name == "feature")
+            .find(|b| b.has_remote && b.name == "feature")
             .expect("remote branch");
         assert_eq!(remote_branch.remote_ref.as_deref(), Some("origin/feature"));
 

@@ -225,10 +225,6 @@ impl Widget for &App {
             branch_input::render_branch_popup(area, buf, input);
         }
 
-        if let Some(notification) = &self.notification {
-            render_notification(area, buf, notification);
-        }
-
         if self.show_changes_popup {
             popup::CompartmentPopup::render(
                 area,
@@ -239,6 +235,10 @@ impl Widget for &App {
                 &self.commit_input,
                 self.commit_message_editing,
             );
+        }
+
+        if let Some(notification) = &self.notification {
+            render_notification(area, buf, notification);
         }
     }
 }
